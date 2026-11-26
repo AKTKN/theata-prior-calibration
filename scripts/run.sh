@@ -11,5 +11,8 @@ export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 cd -- "${PROJECT_DIR}"
+if [[ "${1:-}" == structure ]]; then
+  exec "${PYTHON_RUN}" -m theata_prior "$@"
+fi
 exec "${PYTHON_RUN}" -m theata_prior run "$@"
 

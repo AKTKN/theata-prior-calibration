@@ -20,17 +20,44 @@ _DECODE_STATE: dict = {}
 _DECODE_THREAD_LIMIT = None
 
 
-def _initialize_decoders(directory: str, models: dict[str, str], baseline: str) -> None:
+def _boundary_free_components(num_detectors: int, supports: list[tuple[int, ...]]) -> tuple[np.ndarray, np.ndarray]:
+    """Pack components without a boundary for a vectorized syndrome parity check."""
+    parent = list(range(num_detectors))
+
+    def root(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for support in supports:
+        if len(support) == 2:
+            i, j = support
+            parent[root(j)] = root(i)
+    boundaries = {root(support[0]) for support in supports if len(support) == 1}
+    groups: dict[int, list[int]] = {}
+    for detector in range(num_detectors):
+        component = root(detector)
+        if component not in boundaries:
+            groups.setdefault(component, []).append(detector)
+    lengths = np.array([len(group) for group in groups.values()], dtype=int)
+    columns = np.array([detector for group in groups.values() for detector in group], dtype=int)
+    return columns, np.cumsum(lengths) - lengths
+
+
+def _initialize_decoders(directory: str, models: dict[str, str], baseline: str, allow_unmatched: bool) -> None:
     global _DECODE_STATE, _DECODE_THREAD_LIMIT
     _DECODE_THREAD_LIMIT = threadpool_limits(limits=1)
     samples = SampleSet.open(directory)
     decoders = {}
+    components = {}
     for name, text in models.items():
         dem = stim.DetectorErrorModel(text)
         if dem.num_detectors != samples.num_detectors or dem.num_observables != samples.num_observables:
             raise ValueError(f"Decoder {name!r} has dimensions inconsistent with the sample set")
         # The estimator's structure validator rejects non-graphlike mechanisms.
         # Recheck here so direct callers cannot silently drop a hyperedge.
+        supports = []
         for instruction in dem.flattened():
             if instruction.type != "error":
                 continue
@@ -47,13 +74,52 @@ def _initialize_decoders(directory: str, models: dict[str, str], baseline: str) 
                 raise ValueError("Evaluation requires a graphlike projected DEM; found a hyperedge")
             if not detectors and observables:
                 raise ValueError("A logical-only mechanism is invisible to matching and detector-only calibration")
+            if allow_unmatched and detectors and instruction.args_copy()[0] > 0:
+                supports.append(tuple(detectors))
         decoders[name] = pymatching.Matching.from_detector_error_model(dem)
+        if allow_unmatched:
+            components[name] = _boundary_free_components(samples.num_detectors, supports)
     _DECODE_STATE = {
         "detectors": samples.load_detectors(),
         "observables": samples.load_observables(),
         "decoders": decoders,
+        "components": components,
         "baseline": baseline,
     }
+
+
+def _decode_available(decoder, detectors: np.ndarray, observables: np.ndarray,
+                      components: tuple[np.ndarray, np.ndarray] | None) -> tuple[np.ndarray, np.ndarray]:
+    mismatch = np.zeros(len(detectors), dtype=bool)
+    unmatched = np.zeros_like(mismatch)
+    if components is not None:
+        columns, starts = components
+        if len(columns):
+            unmatched = np.any(np.bitwise_xor.reduceat(detectors[:, columns], starts, axis=1), axis=1)
+
+    def decode(indices: np.ndarray, batch: np.ndarray) -> None:
+        try:
+            prediction = decoder.decode_batch(batch)
+        except ValueError as error:
+            if components is None or "No perfect matching could be found" not in str(error):
+                raise
+            if len(indices) == 1:
+                unmatched[indices[0]] = True
+            else:
+                mid = len(indices) // 2
+                decode(indices[:mid], batch[:mid])
+                decode(indices[mid:], batch[mid:])
+            return
+        expected = observables if len(indices) == len(observables) else observables[indices]
+        if prediction.shape != expected.shape:
+            raise ValueError(f"Decoder returned unexpected observable shape {prediction.shape}")
+        mismatch[indices] = np.any(prediction != expected, axis=1)
+
+    available = np.flatnonzero(~unmatched)
+    if len(available):
+        batch = detectors if len(available) == len(detectors) else detectors[available]
+        decode(available, batch)
+    return mismatch, unmatched
 
 
 def _decode_shard(task: tuple[int, int]) -> dict:
@@ -61,14 +127,15 @@ def _decode_shard(task: tuple[int, int]) -> dict:
     detectors = np.ascontiguousarray(_DECODE_STATE["detectors"][start:stop], dtype=np.uint8)
     observables = _DECODE_STATE["observables"][start:stop]
     errors = {}
+    unmatched_counts = {}
     for name, decoder in _DECODE_STATE["decoders"].items():
-        prediction = decoder.decode_batch(detectors)
-        if prediction.shape != observables.shape:
-            raise ValueError(f"Decoder {name!r} returned unexpected observable shape {prediction.shape}")
-        errors[name] = np.any(prediction != observables, axis=1)
+        mismatch, unmatched = _decode_available(decoder, detectors, observables, _DECODE_STATE["components"].get(name))
+        errors[name] = mismatch | unmatched
+        unmatched_counts[name] = int(np.count_nonzero(unmatched))
     baseline_errors = errors[_DECODE_STATE["baseline"]]
     return {
         "failures": {name: int(np.count_nonzero(values)) for name, values in errors.items()},
+        "unmatched": unmatched_counts,
         "paired": {
             name: (int(np.count_nonzero(values & ~baseline_errors)), int(np.count_nonzero(~values & baseline_errors)))
             for name, values in errors.items() if name != _DECODE_STATE["baseline"]
@@ -85,12 +152,14 @@ def evaluate_models(
     chunk_shots: int = 16_384,
     shots: int | None = None,
     confidence: float = 0.95,
+    allow_unmatched: bool = False,
 ) -> dict:
     """Evaluate all DEMs on identical test shots, with no training-data access.
 
     Each process constructs its own Matching objects and decodes C++ batches.
     Only integer counts cross process boundaries. ``models`` must contain
-    independent graphlike DEMs; raw correlated source DEMs belong in sampling.
+    independent graphlike DEMs. With allow_unmatched, infeasible syndromes
+    count as failures and are also reported separately.
     """
     samples = SampleSet.open(samples) if not isinstance(samples, SampleSet) else samples
     count = samples.shots if shots is None else shots
@@ -104,13 +173,15 @@ def evaluate_models(
         raise ValueError("Logical-error evaluation requires at least one observable")
     started = time.perf_counter()
     total_failures = {name: 0 for name in models}
+    total_unmatched = {name: 0 for name in models}
     total_paired = {name: [0, 0] for name in models if name != baseline}
     tasks = [(start, min(count, start + chunk_shots)) for start in range(0, count, chunk_shots)]
-    initargs = (str(samples.directory), dict(models), baseline)
+    initargs = (str(samples.directory), dict(models), baseline, allow_unmatched)
 
     def accumulate(result: dict) -> None:
         for name, failures in result["failures"].items():
             total_failures[name] += failures
+            total_unmatched[name] += result["unmatched"][name]
         for name, (candidate, reference) in result["paired"].items():
             total_paired[name][0] += candidate
             total_paired[name][1] += reference
@@ -130,10 +201,24 @@ def evaluate_models(
             futures = [executor.submit(_decode_shard, task) for task in tasks]
             for future in as_completed(futures):
                 accumulate(future.result())
+    summaries = {name: logical_error_statistics(value, count, confidence) for name, value in total_failures.items()}
+    if allow_unmatched:
+        for name, summary in summaries.items():
+            failures = total_unmatched[name]
+            decoded = count - failures
+            mismatches = total_failures[name] - failures
+            conditional = logical_error_statistics(mismatches, decoded, confidence) if decoded else None
+            summary.update(
+                decoding_failures=failures, decoding_failure_rate=failures / count,
+                successfully_decoded_shots=decoded, logical_mismatches=mismatches,
+                conditional_logical_mismatch_rate=mismatches / decoded if decoded else None,
+                conditional_ci_low=conditional["ci_low"] if conditional else None,
+                conditional_ci_high=conditional["ci_high"] if conditional else None,
+            )
     return {
         "shots": int(count),
         "baseline": baseline,
-        "models": {name: logical_error_statistics(value, count, confidence) for name, value in total_failures.items()},
+        "models": summaries,
         "paired": {name: paired_error_statistics(a, b, count, confidence) for name, (a, b) in total_paired.items()},
         "elapsed_seconds": time.perf_counter() - started,
         "workers": int(workers),

@@ -97,6 +97,11 @@ def load_config(path: str | Path, *, workers: int | None = None, theata_path: st
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict):
         raise ValueError("configuration must be a YAML mapping")
+    return _base_config(data, path, workers=workers, theata_path=theata_path)
+
+
+def _base_config(data: dict, path: Path, *, workers: int | None, theata_path: str | None) -> ExperimentConfig:
+    data = dict(data)
     unknown = set(data) - {f.name for f in fields(ExperimentConfig)}
     if unknown:
         raise ValueError(f"unknown configuration keys: {sorted(unknown)}")

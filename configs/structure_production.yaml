@@ -1,0 +1,24 @@
+# Large sweep. Use preflight sizing and a suitable CPU and disk allocation.
+distances: [3, 5, 7, 9]
+basis: z
+rounds_per_distance: 1
+physical_error_rates: [0.0005, 0.001, 0.002, 0.004]
+training_shots: [1000, 10000, 50000, 100000, 1000000]
+test_shots: 1000000
+repetitions: 3
+seed: 20261126
+workers: auto
+sample_chunk_shots: 16384
+decode_chunk_shots: 8192
+covariance_chunk_shots: 8192
+theata_path: vendor/theata
+sample_source: dem
+hardware:
+  compiler_options:
+    cool_threshold_transversal: 1.5
+  strict_lut: true
+structure:
+  case_jobs: 2
+  alpha_pairs: 0.025
+  alpha_singletons: 0.025
+  label_mode: calibration_observables

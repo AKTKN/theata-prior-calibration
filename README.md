@@ -69,6 +69,20 @@ executed with rich outputs using:
 .venv/bin/python scripts/execute_notebook.py notebooks/calibration_walkthrough.ipynb --in-process
 ```
 
+## Unknown detector supports
+
+The separate structure benchmark learns singleton and pair detector supports
+from calibration data. It compares complete-family zero clipping and statistical
+selection with the actual and known-support references. The optional
+calibration-observable stage learns logical labels for decoding.
+
+```bash
+bash scripts/run_structure.sh --config configs/structure_smoke.yaml --out results/structure_smoke
+```
+
+See the [method and executed smoke results](docs/unknown_structure.md) and the
+[structure learning walkthrough](notebooks/structure_learning_walkthrough.ipynb).
+
 ## Experiment definition
 
 For each distance and physical rate, the package:

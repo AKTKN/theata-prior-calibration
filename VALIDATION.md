@@ -1,13 +1,25 @@
 # Validation and demonstration results
 
 
-**THeatA を呼ぶのは `circuits.py` の `prepare_surface()` 内、368行目です。** ノートブックの「2. Compile …」セルから `build_models()` を経由して、距離 `d` ごとに一度ここを通ります。[ノートブック](notebooks/calibration_walkthrough.ipynb#L215) · [コンパイル呼び出し](src/theata_prior/circuits.py#L368)
+The notebook's compilation cell invokes THeatA once per code distance
+through `build_models()` and `prepare_surface()`.
+[Notebook](notebooks/calibration_walkthrough.ipynb) · [Compile call](src/theata_prior/circuits.py#L368)
 
-1. 標準 Stim 回路の `H` や `CX` を THeatA のネイティブ操作に展開し、依存関係グラフ `dag` とイオンの初期配置 `initial` を作ります。[Stim から THeatA への変換](src/theata_prior/circuits.py#L309)
-2. `result = compiler.compile(dag, initial)` で **実機向けの操作列**を取得します。イオンの搬送・冷却を含む並列スケジュールは `result.timesteps`、スケジューリング前の操作列は `result.flat_ops` にあります。どちらもこの関数内のメモリ上にあります。[THeatA の戻り値](https://github.com/MSTakahashiPJ/theata/blob/8bfb9b97de91bacac2f56725c27b4c71c6a91009/src/qccd_compiler.py#L2618)
-3. **シミュレーション用の `.stim`** は、THeatA のスケジュールから得た待機時間と、MS ゲート時のフォノン情報をノイズに反映して、このプロジェクト側で生成します。`build_models()` が `actual_noisy.stim` に保存し、ノートブックがその先頭18行を表示します。`theata_native_ideal.stim` は手順1で作るノイズなしのネイティブゲート列です。[ノイズ付き Stim の生成](src/theata_prior/circuits.py#L71) · [ファイル保存](src/theata_prior/experiment.py#L93)
+1. The bridge expands standard Stim gates such as `H` and `CX` into THeatA
+   operations and constructs the dependency graph and initial ion placement.
+   [Stim bridge](src/theata_prior/circuits.py#L309)
+2. `result = compiler.compile(dag, initial)` returns the hardware schedule.
+   The in-memory `result.timesteps` contains parallel operations with
+   transport and cooling. `result.flat_ops` contains the list before
+   scheduling. [THeatA compile result](https://github.com/MSTakahashiPJ/theata/blob/8bfb9b97de91bacac2f56725c27b4c71c6a91009/src/qccd_compiler.py#L2618)
+3. The simulator applies idle times and the MS-gate phonon trace to
+   construct `actual_noisy.stim`. The notebook displays its first 18
+   instructions. `theata_native_ideal.stim` holds the noiseless expansion
+   from step 1. [Noise construction](src/theata_prior/circuits.py#L71) · [File output](src/theata_prior/experiment.py#L93)
 
-`main1` の `d=9, p=0.004` の出力はここにあります。`results/main1/d9_r9_z/p003_0.004/actual_noisy.stim` · `results/main1/d9_r9_z/p003_0.004/theata_native_ideal.stim` · `results/main1/d9_r9_z/p003_0.004/hardware.json`
+For `main1` at `d=9, p=0.004`, the directory
+`results/main1/d9_r9_z/p003_0.004/` contains both Stim files and the
+hardware summary `hardware.json`.
 
 
 ## English documentation update
