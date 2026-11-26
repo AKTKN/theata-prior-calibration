@@ -1,0 +1,12 @@
+code: color
+sweep: cap
+distances: [3, 5, 7, 9, 11, 13]
+rounds: 3
+basis: Z
+thermal_boundary: reset_each_round
+# Reproduction sampling grid. The original raw-data grid is unavailable.
+caps: [0, 0.1, 0.2, 0.5, 1, 1.5, 2, 2.5, 2.8, 3, 3.5, 3.9, 4, 4.5, 5, 5.6, 6, 8, 10, 15, 20]
+shots: 100000
+shard_shots: 2048
+seed: 20261127
+workers: auto

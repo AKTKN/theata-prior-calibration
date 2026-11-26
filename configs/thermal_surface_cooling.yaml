@@ -1,0 +1,11 @@
+code: surface
+sweep: cooling
+distances: [3, 5, 7]
+rounds: 3
+basis: Z
+thermal_boundary: reset_each_round
+budgets: [1, 2, 4, 8, 16]
+shots: 100000
+shard_shots: 2048
+seed: 20261127
+workers: auto

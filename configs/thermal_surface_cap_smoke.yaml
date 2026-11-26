@@ -1,0 +1,11 @@
+code: surface
+sweep: cap
+distances: [3, 5]
+rounds: 3
+basis: Z
+thermal_boundary: reset_each_round
+caps: [0, 1.5, 4, 20]
+shots: 768
+shard_shots: 192
+seed: 20261127
+workers: 2

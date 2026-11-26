@@ -36,8 +36,42 @@ def main(argv: list[str] | None = None) -> None:
             child.add_argument("--config", default="configs/structure_smoke.yaml")
             child.add_argument("--workers", type=int)
             child.add_argument("--theata-path")
+    thermal = subparsers.add_parser("thermal", help="Physical phonon-cap and cooling-policy benchmarks")
+    thermal_stages = thermal.add_subparsers(dest="thermal_stage", required=True)
+    for stage, description in (
+        ("build", "Compile traces and construct condition-specific decoders"),
+        ("run", "Build, sample, decode and plot the thermal benchmark"),
+        ("plot", "Regenerate thermal figures from saved results"),
+    ):
+        child = thermal_stages.add_parser(stage, help=description)
+        child.add_argument("--out", required=True)
+        if stage != "plot":
+            child.add_argument("--config", required=True)
+            child.add_argument("--workers", type=int)
+            child.add_argument("--shots", type=int)
+            child.add_argument("--shard-shots", type=int)
+            child.add_argument("--seed", type=int)
+            child.add_argument("--theata-path")
+            child.add_argument("--resume", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.command == "thermal":
+            from .thermal_plotting import plot_thermal
+
+            if args.thermal_stage == "plot":
+                for path in plot_thermal(args.out):
+                    print(path)
+                return
+            from .thermal_config import load_thermal_config
+            from .thermal_experiment import build_thermal, run_thermal
+
+            config = load_thermal_config(
+                args.config, workers=args.workers, shots=args.shots, shard_shots=args.shard_shots,
+                seed=args.seed, theata_path=args.theata_path,
+            )
+            action = run_thermal if args.thermal_stage == "run" else build_thermal
+            action(config, args.out, resume=args.resume)
+            return
         if args.command == "structure":
             from .structure_config import load_structure_config
             from . import structure_experiment as experiment

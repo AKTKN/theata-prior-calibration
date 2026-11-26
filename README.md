@@ -83,6 +83,23 @@ bash scripts/run_structure.sh --config configs/structure_smoke.yaml --out result
 See the [method and executed smoke results](docs/unknown_structure.md) and the
 [structure learning walkthrough](notebooks/structure_learning_walkthrough.ipynb).
 
+## Thermal benchmarks
+
+Run the THeatA Figure 4 and Figure 6 surface-code profiles and corresponding
+triangular color-code experiments through the separate `thermal` commands.
+
+```bash
+bash scripts/bootstrap.sh --thermal
+.venv/bin/theata-prior thermal run --config configs/thermal_surface_cap_smoke.yaml \
+  --out results/thermal_surface_cap_smoke --workers 2 --resume
+.venv/bin/jupyter lab notebooks/thermal_getting_started.ipynb
+```
+
+The [getting-started notebook](notebooks/thermal_getting_started.ipynb) runs
+all four simulations and regenerates the figures. The [thermal methods](docs/thermal_benchmarks.md)
+describe the physics, compiler, decoding, production presets, PBS commands and
+executed validation.
+
 ## Experiment definition
 
 For each distance and physical rate, the package:

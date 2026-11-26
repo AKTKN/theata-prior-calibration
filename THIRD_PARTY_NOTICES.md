@@ -14,3 +14,7 @@ license is included in `licenses/THEATA-APACHE-2.0.txt`.
 
 Stim, PyMatching, NumPy, SciPy and the other dependencies retain their own
 licenses and are installed separately.
+
+The optional thermal benchmark uses [color-code-stim](https://github.com/seokhyung-lee/color-code-stim)
+at commit `0eb35935c1e5ff30ba3db9def30a9d35bca2f16d`, distributed under
+the MIT License and installed separately.

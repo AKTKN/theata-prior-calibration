@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+thermal = ["color-code-stim @ git+https://github.com/seokhyung-lee/color-code-stim.git@0eb35935c1e5ff30ba3db9def30a9d35bca2f16d"]
 notebook = ["jupyterlab>=4,<5", "ipykernel>=6", "nbformat>=5", "nbclient>=0.10"]
 test = ["pytest>=8,<10", "nbformat>=5", "nbclient>=0.10", "ipykernel>=6"]
 

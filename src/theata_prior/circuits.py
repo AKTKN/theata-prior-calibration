@@ -76,45 +76,7 @@ class PreparedSurface:
         if baseline <= 0:
             raise ValueError("Cannot normalize a zero-error MS lookup table")
         alpha = p / baseline
-        pars = self.noise_parameters
-        scaled = {key: alpha * pars[key] for key in ("p_R", "p_reset", "p_meas")}
-        for key, value in scaled.items():
-            if not 0 <= value < 0.5:
-                raise ValueError(f"Scaled {key}={value} is outside [0, 0.5); reduce p")
-        gamma = alpha * pars["gamma_phi_per_s"]
-        noisy = stim.Circuit()
-        ms_totals: list[float] = []
-        idle_total_us = 0.0
-        idle_max_p = 0.0
-        for step in self.steps:
-            if isinstance(step, stim.CircuitInstruction):
-                noisy.append(step)
-                continue
-            # A Z error before Z-reset is absorbed by reset.  After measuring
-            # in X, we explicitly use H+M, so no basis-specific shortcut is used.
-            if step.gate != "R":
-                for qubit, gap in zip(step.targets, step.idle_before_us, strict=True):
-                    idle_total_us += gap
-                    probability = -math.expm1(-2 * gamma * gap * 1e-6) / 2
-                    idle_max_p = max(idle_max_p, probability)
-                    if probability > 0:
-                        noisy.append("Z_ERROR", [qubit], probability)
-            if step.gate == "M" and scaled["p_meas"] > 0:
-                noisy.append("X_ERROR", step.targets, scaled["p_meas"])
-            noisy.append(step.gate, step.targets)
-            if step.gate == "R":
-                if scaled["p_reset"] > 0:
-                    noisy.append("X_ERROR", step.targets, scaled["p_reset"])
-            elif step.gate == "SQRT_XX":
-                probabilities = [alpha * value for value in step.ms_probabilities]
-                total = math.fsum(probabilities)
-                if total >= 0.5 or any(value < 0 for value in probabilities):
-                    raise ValueError(f"Scaled MS error {total} is outside [0, 0.5); reduce p")
-                ms_totals.append(total)
-                if total > 0:
-                    noisy.append("PAULI_CHANNEL_2", step.targets, probabilities)
-            elif step.gate != "M" and scaled["p_R"] > 0:
-                noisy.append("DEPOLARIZE1", step.targets, scaled["p_R"])
+        noisy, noise_summary = inject_native_noise(self.steps, self.noise_parameters, alpha=alpha)
 
         # General PAULI_CHANNEL_2 outcomes are mutually exclusive.  Stim's
         # independent DEM conversion is explicitly an approximation here.
@@ -124,14 +86,8 @@ class PreparedSurface:
         )
         metadata = dict(self.metadata)
         metadata.update(
+            **noise_summary,
             physical_error_rate=p,
-            noise_scale=alpha,
-            mean_ms_error=float(np.mean(ms_totals)),
-            min_ms_error=min(ms_totals),
-            max_ms_error=max(ms_totals),
-            scaled_noise_parameters={**scaled, "gamma_phi_per_s": gamma},
-            idle_total_us=idle_total_us,
-            max_idle_probability=idle_max_p,
             dem_approximate_disjoint_errors=True,
             actual_dem_semantics="independent Pauli-event approximation to the physical circuit",
             circuit_sampling_semantics="exact sampling of the compiled stochastic Pauli circuit",
@@ -145,6 +101,63 @@ class PreparedSurface:
             detector_sectors=self.detector_sectors,
             metadata=metadata,
         )
+
+
+def inject_native_noise(
+    steps: tuple[NativeStep | stim.CircuitInstruction, ...],
+    pars: Mapping[str, float],
+    *,
+    alpha: float = 1.0,
+) -> tuple[stim.Circuit, dict[str, Any]]:
+    """Apply physical noise in the native Pauli frame. Thermal runs use alpha=1."""
+    scaled = {key: alpha * pars[key] for key in ("p_R", "p_reset", "p_meas")}
+    for key, value in scaled.items():
+        if not 0 <= value < 0.5:
+            raise ValueError(f"Scaled {key}={value} is outside [0, 0.5); reduce p")
+    gamma = alpha * pars["gamma_phi_per_s"]
+    noisy = stim.Circuit()
+    ms_totals: list[float] = []
+    idle_total_us = 0.0
+    idle_max_p = 0.0
+    for step in steps:
+        if isinstance(step, stim.CircuitInstruction):
+            noisy.append(step)
+            continue
+        # A Z error before Z-reset is absorbed by reset.  After measuring
+        # in X, we explicitly use H+M, so no basis-specific shortcut is used.
+        if step.gate != "R":
+            for qubit, gap in zip(step.targets, step.idle_before_us, strict=True):
+                idle_total_us += gap
+                probability = -math.expm1(-2 * gamma * gap * 1e-6) / 2
+                idle_max_p = max(idle_max_p, probability)
+                if probability > 0:
+                    noisy.append("Z_ERROR", [qubit], probability)
+        if step.gate == "M" and scaled["p_meas"] > 0:
+            noisy.append("X_ERROR", step.targets, scaled["p_meas"])
+        noisy.append(step.gate, step.targets)
+        if step.gate == "R":
+            if scaled["p_reset"] > 0:
+                noisy.append("X_ERROR", step.targets, scaled["p_reset"])
+        elif step.gate == "SQRT_XX":
+            probabilities = [alpha * value for value in step.ms_probabilities]
+            total = math.fsum(probabilities)
+            if total >= 0.5 or any(value < 0 for value in probabilities):
+                raise ValueError(f"Scaled MS error {total} is outside [0, 0.5); reduce p")
+            ms_totals.append(total)
+            if total > 0:
+                noisy.append("PAULI_CHANNEL_2", step.targets, probabilities)
+        elif step.gate != "M" and scaled["p_R"] > 0:
+            noisy.append("DEPOLARIZE1", step.targets, scaled["p_R"])
+
+    return noisy, {
+        "noise_scale": alpha,
+        "mean_ms_error": float(np.mean(ms_totals)),
+        "min_ms_error": min(ms_totals),
+        "max_ms_error": max(ms_totals),
+        "scaled_noise_parameters": {**scaled, "gamma_phi_per_s": gamma},
+        "idle_total_us": idle_total_us,
+        "max_idle_probability": idle_max_p,
+    }
 
 
 def _load_theata(path: str | Path) -> dict[str, Any]:
@@ -242,6 +255,81 @@ def detector_sectors(circuit: stim.Circuit) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _unroll_stim(circuit: stim.Circuit):
+    """Expand repeats while retaining coordinate shifts as round markers."""
+    for instruction in circuit:
+        if isinstance(instruction, stim.CircuitRepeatBlock):
+            body = instruction.body_copy()
+            for _ in range(instruction.repeat_count):
+                yield from _unroll_stim(body)
+        else:
+            yield instruction
+
+
+def native_stim_bridge(ideal: stim.Circuit, ast, *, keep_coordinate_shifts: bool = False):
+    """Translate a noiseless Stim Clifford stream without changing its records."""
+    instructions = _unroll_stim(ideal) if keep_coordinate_shifts else ideal.flattened()
+    operations: list[Any] = []
+    specifications: list[tuple[str, tuple[int, ...]]] = []
+    stream: list[int | stim.CircuitInstruction] = []
+    compiled_ideal = stim.Circuit()
+
+    def append_native(gate: str, targets: tuple[int, ...]) -> None:
+        if gate == "R":
+            operation = ast.ResetOp(list(targets))
+        elif gate == "M":
+            operation = ast.MeasureOp(list(targets))
+        elif gate == "SQRT_XX":
+            operation = ast.GateOp("MS", list(targets), [0.25])
+        else:
+            angles = {
+                "X": (math.pi, 0.0),
+                "SQRT_Y": (math.pi / 2, math.pi / 2),
+                "SQRT_Y_DAG": (math.pi / 2, 3 * math.pi / 2),
+                "SQRT_X_DAG": (math.pi / 2, math.pi),
+            }
+            operation = ast.GateOp("R", list(targets), list(angles[gate]))
+        stream.append(len(operations))
+        operations.append(operation)
+        specifications.append((gate, targets))
+        compiled_ideal.append(gate, targets)
+
+    for instruction in instructions:
+        name = instruction.name
+        targets = tuple(t.value for t in instruction.targets_copy())
+        if name == "CX":
+            if any(not target.is_qubit_target for target in instruction.targets_copy()):
+                raise ValueError(f"Unsupported non-qubit target in {instruction}")
+            for a, b in zip(targets[::2], targets[1::2], strict=True):
+                for gate, qubits in _native_gate_specs("CX", (a, b)):
+                    append_native(gate, qubits)
+        elif name in {"H", "R", "RX", "M", "MX", "MR", "MRX"}:
+            if any(not target.is_qubit_target for target in instruction.targets_copy()):
+                raise ValueError(f"Unsupported non-qubit target in {instruction}")
+            if any(instruction.gate_args_copy()):
+                raise ValueError(f"Source circuit must be noiseless: {instruction}")
+            for qubit in targets:
+                if name in {"R", "RX"}:
+                    append_native("R", (qubit,))
+                if name in {"H", "RX", "MX", "MRX"}:
+                    for gate, qubits in _native_gate_specs("H", (qubit,)):
+                        append_native(gate, qubits)
+                if name in {"M", "MX", "MR", "MRX"}:
+                    append_native("M", (qubit,))
+                if name in {"MR", "MRX"}:
+                    append_native("R", (qubit,))
+                if name == "MRX":
+                    for gate, qubits in _native_gate_specs("H", (qubit,)):
+                        append_native(gate, qubits)
+        elif name in {"TICK", "QUBIT_COORDS", "DETECTOR", "OBSERVABLE_INCLUDE", "SHIFT_COORDS"}:
+            stream.append(instruction)
+            compiled_ideal.append(instruction)
+        else:
+            raise ValueError(f"Unsupported Stim instruction: {name}")
+
+    return operations, specifications, stream, compiled_ideal
+
+
 def prepare_surface(
     distance: int,
     rounds: int,
@@ -301,54 +389,7 @@ def prepare_surface(
     )
     initial = {q: 1 if index < (len(ions) + 1) // 2 else 5 for index, q in enumerate(ions)}
     declarations = [ast.QubitDecl(q, ast.Location(initial[q], i)) for i, q in enumerate(ions)]
-    operations: list[Any] = []
-    specifications: list[tuple[str, tuple[int, ...]]] = []
-    stream: list[int | stim.CircuitInstruction] = []
-    compiled_ideal = stim.Circuit()
-
-    def append_native(gate: str, targets: tuple[int, ...]) -> None:
-        if gate == "R":
-            operation = ast.ResetOp(list(targets))
-        elif gate == "M":
-            operation = ast.MeasureOp(list(targets))
-        elif gate == "SQRT_XX":
-            operation = ast.GateOp("MS", list(targets), [0.25])
-        else:
-            angles = {
-                "X": (math.pi, 0.0),
-                "SQRT_Y": (math.pi / 2, math.pi / 2),
-                "SQRT_Y_DAG": (math.pi / 2, 3 * math.pi / 2),
-                "SQRT_X_DAG": (math.pi / 2, math.pi),
-            }
-            operation = ast.GateOp("R", list(targets), list(angles[gate]))
-        stream.append(len(operations))
-        operations.append(operation)
-        specifications.append((gate, targets))
-        compiled_ideal.append(gate, targets)
-
-    for instruction in ideal.flattened():
-        name = instruction.name
-        targets = tuple(t.value for t in instruction.targets_copy())
-        if name == "CX":
-            for a, b in zip(targets[::2], targets[1::2], strict=True):
-                for gate, qubits in _native_gate_specs("CX", (a, b)):
-                    append_native(gate, qubits)
-        elif name in {"H", "R", "RX", "M", "MX", "MR"}:
-            for qubit in targets:
-                if name in {"R", "RX"}:
-                    append_native("R", (qubit,))
-                if name in {"H", "RX", "MX"}:
-                    for gate, qubits in _native_gate_specs("H", (qubit,)):
-                        append_native(gate, qubits)
-                if name in {"M", "MX", "MR"}:
-                    append_native("M", (qubit,))
-                if name == "MR":
-                    append_native("R", (qubit,))
-        elif name in {"TICK", "QUBIT_COORDS", "DETECTOR", "OBSERVABLE_INCLUDE"}:
-            stream.append(instruction)
-            compiled_ideal.append(instruction)
-        else:
-            raise ValueError(f"Unsupported instruction in standard generator: {name}")
+    operations, specifications, stream, compiled_ideal = native_stim_bridge(ideal, ast)
 
     program = ast.Program(declarations, operations)
     dag = dag_module.DAGBuilder(program, stabilizer_parallel=False).build()
