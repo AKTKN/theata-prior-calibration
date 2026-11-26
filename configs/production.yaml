@@ -1,0 +1,23 @@
+# Explicit larger study. Change shots/repetitions to suit the allocation.
+distances: [3, 5, 7]
+basis: z
+rounds_per_distance: 1
+physical_error_rates: [0.0005, 0.001, 0.002, 0.003, 0.004]
+training_shots: [1000, 10000, 100000, 1000000]
+test_shots: 1000000
+repetitions: 3
+seed: 20261126
+workers: auto
+sample_chunk_shots: 65536
+decode_chunk_shots: 16384
+covariance_chunk_shots: 8192
+covariance_block_detectors: 128
+theata_path: vendor/theata
+sample_source: dem
+probability_floor: 1.0e-8
+strict_estimation: false
+hardware:
+  compiler_options:
+    cool_threshold_transversal: 1.5
+  strict_lut: true
+
