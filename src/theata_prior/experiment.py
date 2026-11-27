@@ -33,10 +33,11 @@ class Case:
     physical_error_rate: float
 
 
-def cases(config: ExperimentConfig, output_dir: str | Path) -> Iterator[Case]:
+def cases(config: ExperimentConfig, output_dir: str | Path, *,
+          rounds_by_distance: dict[int, int] | None = None) -> Iterator[Case]:
     root = Path(output_dir).resolve()
     for distance in config.distances:
-        rounds = distance * config.rounds_per_distance
+        rounds = (rounds_by_distance or {}).get(distance, distance * config.rounds_per_distance)
         for index, rate in enumerate(config.physical_error_rates):
             yield Case(root / f"d{distance}_r{rounds}_{config.basis}" / f"p{index:03d}_{rate:.8g}", distance, rounds, rate)
 
@@ -45,10 +46,13 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
-def initialize_run(config: ExperimentConfig, output_dir: str | Path) -> Path:
+def initialize_run(config: ExperimentConfig, output_dir: str | Path, *,
+                   rounds_by_distance: dict[int, int] | None = None) -> Path:
     root = Path(output_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
     identity = {"package_version": __version__, "scientific_config": config.scientific_dict(), "theata_reference_revision": THEATA_REVISION}
+    if rounds_by_distance:
+        identity["rounds_by_distance"] = rounds_by_distance
     digest = fingerprint(identity)
     marker = root / "run.json"
     if marker.exists():
@@ -67,12 +71,13 @@ def initialize_run(config: ExperimentConfig, output_dir: str | Path) -> Path:
     return root
 
 
-def build_models(config: ExperimentConfig, output_dir: str | Path) -> list[Case]:
+def build_models(config: ExperimentConfig, output_dir: str | Path, *,
+                 rounds_by_distance: dict[int, int] | None = None) -> list[Case]:
     """Compile each distance once; generate actual models for all physical p."""
     from .circuits import prepare_surface
 
-    root = initialize_run(config, output_dir)
-    all_cases = list(cases(config, root))
+    root = initialize_run(config, output_dir, rounds_by_distance=rounds_by_distance)
+    all_cases = list(cases(config, root, rounds_by_distance=rounds_by_distance))
     for distance in config.distances:
         selected = [case for case in all_cases if case.distance == distance]
         if all((case.directory / "model.json").exists() for case in selected):
@@ -80,7 +85,7 @@ def build_models(config: ExperimentConfig, output_dir: str | Path) -> list[Case]
             continue
         started = time.perf_counter()
         _log(f"build: d={distance} compiling THeatA model")
-        prepared = prepare_surface(distance, distance * config.rounds_per_distance, config.basis, config.theata_path, **config.hardware)
+        prepared = prepare_surface(distance, selected[0].rounds, config.basis, config.theata_path, **config.hardware)
         for case in selected:
             folder = case.directory
             if (folder / "model.json").exists():

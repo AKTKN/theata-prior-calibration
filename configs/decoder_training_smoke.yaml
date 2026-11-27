@@ -1,0 +1,6 @@
+# Small executable example. Unspecified settings use the package defaults.
+physical:
+  hardware:
+    compiler_options:
+      cool_threshold_transversal: 1.5
+    strict_lut: true

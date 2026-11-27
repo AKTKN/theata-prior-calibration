@@ -83,6 +83,18 @@ bash scripts/run_structure.sh --config configs/structure_smoke.yaml --out result
 See the [method and executed smoke results](docs/unknown_structure.md) and the
 [structure learning walkthrough](notebooks/structure_learning_walkthrough.ipynb).
 
+## Decoder-specific prior training
+
+The `decoder-training` workflow uses the Cross-Entropy Method to learn separate
+grouped DEM priors for MWPM and ldpc Union-find. Detector supports and logical
+actions are fixed. Validation selects checkpoints, and a shared test set
+measures transfer across decoders. [Decoder training guide](docs/decoder_training.md)
+
+```bash
+.venv/bin/python -m pip install -e '.[decoder-training,notebook]'
+scripts/run_decoder_training.sh --config configs/decoder_training_smoke.yaml --out results/decoder_training_smoke
+```
+
 ## Thermal benchmarks
 
 Run the THeatA Figure 4 and Figure 6 surface-code profiles and corresponding

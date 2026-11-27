@@ -88,14 +88,18 @@ def _initialize_decoders(directory: str, models: dict[str, str], baseline: str, 
     }
 
 
-def _decode_available(decoder, detectors: np.ndarray, observables: np.ndarray,
-                      components: tuple[np.ndarray, np.ndarray] | None) -> tuple[np.ndarray, np.ndarray]:
-    mismatch = np.zeros(len(detectors), dtype=bool)
-    unmatched = np.zeros_like(mismatch)
+def _infeasible_shots(detectors: np.ndarray, components: tuple[np.ndarray, np.ndarray] | None) -> np.ndarray:
     if components is not None:
         columns, starts = components
         if len(columns):
-            unmatched = np.any(np.bitwise_xor.reduceat(detectors[:, columns], starts, axis=1), axis=1)
+            return np.any(np.bitwise_xor.reduceat(detectors[:, columns], starts, axis=1), axis=1)
+    return np.zeros(len(detectors), dtype=bool)
+
+
+def _predict_available(decoder, detectors: np.ndarray, num_observables: int,
+                       components: tuple[np.ndarray, np.ndarray] | None) -> tuple[np.ndarray, np.ndarray]:
+    predictions = np.zeros((len(detectors), num_observables), dtype=np.uint8)
+    unmatched = _infeasible_shots(detectors, components)
 
     def decode(indices: np.ndarray, batch: np.ndarray) -> None:
         try:
@@ -110,16 +114,21 @@ def _decode_available(decoder, detectors: np.ndarray, observables: np.ndarray,
                 decode(indices[:mid], batch[:mid])
                 decode(indices[mid:], batch[mid:])
             return
-        expected = observables if len(indices) == len(observables) else observables[indices]
-        if prediction.shape != expected.shape:
+        if prediction.shape != (len(indices), num_observables):
             raise ValueError(f"Decoder returned unexpected observable shape {prediction.shape}")
-        mismatch[indices] = np.any(prediction != expected, axis=1)
+        predictions[indices] = prediction
 
     available = np.flatnonzero(~unmatched)
     if len(available):
         batch = detectors if len(available) == len(detectors) else detectors[available]
         decode(available, batch)
-    return mismatch, unmatched
+    return predictions, unmatched
+
+
+def _decode_available(decoder, detectors: np.ndarray, observables: np.ndarray,
+                      components: tuple[np.ndarray, np.ndarray] | None) -> tuple[np.ndarray, np.ndarray]:
+    predictions, unmatched = _predict_available(decoder, detectors, observables.shape[1], components)
+    return np.any(predictions != observables, axis=1) & ~unmatched, unmatched
 
 
 def _decode_shard(task: tuple[int, int]) -> dict:
