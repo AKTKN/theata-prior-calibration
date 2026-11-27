@@ -1,8 +1,8 @@
-# Small end-to-end execution check; not a high-precision LER study.
+# End-to-end check including the no-cooling condition and reported LUT bounds.
 distances: [3]
 basis: z
 rounds_per_distance: 1
-physical_error_rates: [0.001, 0.003]
+cool_thresholds: [0.25, 1.5, 4.0, null]
 training_shots: [2000, 10000]
 test_shots: 10000
 repetitions: 1
@@ -15,7 +15,6 @@ theata_path: vendor/theata
 sample_source: dem
 probability_floor: 1.0e-8
 hardware:
-  compiler_options:
-    cool_threshold_transversal: 1.5
-  strict_lut: true
+  strict_lut: false
+  # Use the upstream bounded lookup and record any out-of-range gates.
 

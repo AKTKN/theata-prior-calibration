@@ -57,8 +57,18 @@ and sample realization. `--no-resume` requires a fresh directory.
 ```
 
 In Jupyter, select the **THeatA prior calibration** kernel installed by
-bootstrap. Edit the first code cell to change configuration, stages, or plot
-selectors. Running with `stages = ("plot",)` loads and replots existing results.
+bootstrap. The first code cell exposes `target_decoders`, `evaluation_decoders`,
+and `plot_decoders`. Use `("uf",)`, `("mwpm",)`, or `("mwpm", "uf")`.
+`None` uses the YAML setting. The same keys can be set in YAML, for example
+`target_decoders: [uf]`, `evaluation_decoders: [uf]`, and `plot_decoders: [uf]`.
+
+Running with `stages = ("plot",)` loads and replots existing results.
+`plot_decoders` selects evaluation panels and corresponding trained priors.
+The figures include the actual and covariance baselines. A single-decoder
+selection writes to `figures/mwpm` or `figures/uf`. With the default null
+`plot_decoders`, the notebook shows every saved decoder. The plot CLI accepts
+`--decoders uf`, `--decoders mwpm`, or `--decoders mwpm uf`.
+
 For a headless execution from the repository root, run the notebook on a copy
 with the same environment.
 

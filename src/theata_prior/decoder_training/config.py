@@ -13,6 +13,13 @@ LDPC_VERSION = "2.4.1"
 DECODERS = ("mwpm", "uf")
 
 
+def validate_decoders(values: tuple[str, ...] | list[str], field_name: str) -> tuple[str, ...]:
+    if (not isinstance(values, (list, tuple)) or not values
+            or any(value not in DECODERS for value in values) or len(set(values)) != len(values)):
+        raise ValueError(f"{field_name} must contain distinct selections from {list(DECODERS)}")
+    return tuple(values)
+
+
 def _positive(value: int, name: str) -> None:
     if type(value) is not int or value < 1:
         raise ValueError(f"{name} must be a positive integer")
@@ -98,21 +105,27 @@ class TrainingConfig:
     bits_per_step: int = 1
     cem: CEMConfig = field(default_factory=CEMConfig)
     resources: Resources = field(default_factory=Resources)
+    plot_decoders: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         _positive(self.validation_shots, "validation_shots")
+        if self.physical.physical_error_rates is None:
+            raise ValueError("Decoder training uses physical_error_rates")
         if self.physical.workers != 1:
             raise ValueError("set decoder-training worker allocations in resources")
         for distance, rounds in self.rounds_by_distance.items():
             if type(distance) is not int or distance not in self.physical.distances:
                 raise ValueError("rounds_by_distance keys must be configured distances")
             _positive(rounds, "rounds_by_distance value")
-        for key, allowed in (("initializations", {"covariance", "uniform"}),
-                             ("target_decoders", set(DECODERS)), ("evaluation_decoders", set(DECODERS))):
-            values = tuple(getattr(self, key))
-            if not values or len(set(values)) != len(values) or set(values) - allowed:
-                raise ValueError(f"{key} must contain distinct selections from {sorted(allowed)}")
-            object.__setattr__(self, key, values)
+        initializations = tuple(self.initializations)
+        if (not initializations or len(set(initializations)) != len(initializations)
+                or set(initializations) - {"covariance", "uniform"}):
+            raise ValueError("initializations must contain distinct selections from ['covariance', 'uniform']")
+        object.__setattr__(self, "initializations", initializations)
+        for key in ("target_decoders", "evaluation_decoders", "plot_decoders"):
+            values = getattr(self, key)
+            if key != "plot_decoders" or values is not None:
+                object.__setattr__(self, key, validate_decoders(values, key))
         seeds = tuple(self.optimizer_seeds)
         if not seeds or any(type(seed) is not int or seed < 0 for seed in seeds) or len(set(seeds)) != len(seeds):
             raise ValueError("optimizer_seeds must contain distinct nonnegative integers")
@@ -133,6 +146,7 @@ class TrainingConfig:
     def scientific_dict(self) -> dict:
         value = asdict(self)
         del value["resources"]
+        del value["plot_decoders"]
         value["physical"] = self.physical.scientific_dict()
         return value
 

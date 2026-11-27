@@ -301,8 +301,34 @@ def test_synthetic_pipeline_uses_no_oracle_until_evaluation(structure, tmp_path,
     assert any(row.get("finite_only") for row in diagnostics)
     paths = plot_results(tmp_path, PlotOptions(calibration_shots=256, initialization="uniform", formats=("png", "pdf")))
     assert len(paths) == 22 and all(path.stat().st_size > 1000 for path in paths)
+    assert load_results(tmp_path, decoders=("mwpm", "uf")) == (saved, diagnostics, index)
+    uf_rows, uf_diagnostics, uf_index = load_results(tmp_path, decoders=("uf",))
+    assert {row["evaluation_decoder"] for row in uf_rows} == {"uf"}
+    assert {row["method"] for row in uf_rows} == {"actual", "covariance", "initial", "cem_uf"}
+    assert all(row["method"] != "cem_mwpm" for row in uf_diagnostics)
+    assert all(set(row["traces"]) == {"cem_uf"} and "cem_mwpm" not in row["statuses"] for row in uf_index)
+    uf_paths = plot_results(tmp_path, PlotOptions(decoders=("uf",), formats=("png",)))
+    assert len(uf_paths) == 10 and {path.parent for path in uf_paths} == {tmp_path / "figures" / "uf"}
+    assert "trace_cem_uf.png" in {path.name for path in uf_paths}
+    assert "trace_cem_mwpm.png" not in {path.name for path in uf_paths}
     assert preflight(config, tmp_path, probe_shots=17)[0]["uf_timing_probe_shots"] == 17
     assert SampleSet.open(case.directory / "samples_test").shots == 384
+
+
+@pytest.mark.parametrize("decoder", ["mwpm", "uf"])
+def test_single_decoder_configuration_trains_and_evaluates_selected_decoder(structure, tmp_path, decoder):
+    if decoder == "uf":
+        pytest.importorskip("ldpc")
+    selected = (decoder,)
+    config = _config(target_decoders=selected, evaluation_decoders=selected, plot_decoders=selected)
+    _synthetic_case(config, tmp_path, structure, np.array([.12, .07, .05]))
+    sample(config, tmp_path)
+    fit(config, tmp_path)
+    assert {row["target_decoder"] for row in train(config, tmp_path)} == {decoder}
+    assert {row["evaluation_decoder"] for row in evaluate(config, tmp_path)} == {decoder}
+    other = "mwpm" if decoder == "uf" else "uf"
+    with pytest.raises(ValueError, match=f"No saved evaluations for {other}"):
+        load_results(tmp_path, decoders=(other,))
 
 
 def test_saturated_covariance_is_unavailable_and_uniform_fallback_is_explicit(tmp_path):
@@ -324,13 +350,18 @@ def test_saturated_covariance_is_unavailable_and_uniform_fallback_is_explicit(tm
     assert plot_results(tmp_path, PlotOptions(formats=("png",)))
 
 
-def test_configuration_and_cpu_budget(monkeypatch):
+def test_configuration_and_cpu_budget(monkeypatch, tmp_path):
     from theata_prior.decoder_training import config
 
-    base = Path(__file__).resolve().parents[1]
     monkeypatch.setattr(config, "available_cpus", lambda: 2)
-    research = load_training_config(base / "configs/decoder_training_research.yaml")
-    assert research.rounds_by_distance == {3: 3, 5: 5}
+    path = tmp_path / "experiment.yaml"
+    path.write_text("physical:\n  distances: [3, 5]\nrounds_by_distance: {3: 3, 5: 5}\nplot_decoders: [uf]\n")
+    configured = load_training_config(path)
+    assert configured.rounds_by_distance == {3: 3, 5: 5}
+    assert configured.plot_decoders == ("uf",)
+    assert configured.scientific_dict() == replace(configured, plot_decoders=None).scientific_dict()
+    with pytest.raises(ValueError, match="plot decoders"):
+        PlotOptions(decoders=("uf", "uf"))
     with pytest.raises(ValueError, match="allocation exceeds"):
         Resources(total_workers=1, sampling_jobs=1, candidate_jobs=2)
     monkeypatch.setattr(config, "available_cpus", lambda: 1)

@@ -1,0 +1,14 @@
+distances: [5, 7]
+basis: z
+rounds: 3
+liz_pt_thresholds: [0.2, 0.5, 0.7, 1.0, 1.5, 2.1, 2.8]
+liz_pt_max_iters: 32
+cooling_duration_us: 1000.0
+residual_phonon: 0.0
+training_shots: [1000, 10000, 100000]
+test_shots: 100000
+repetitions: 1
+workers: 8
+seed: 20261127
+sample_source: circuit
+theata_path: vendor/theata

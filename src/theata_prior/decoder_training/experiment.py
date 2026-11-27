@@ -578,7 +578,7 @@ def preflight(config: TrainingConfig, output_dir: str | Path, *, probe_shots: in
 @single_writer
 def run(config: TrainingConfig, output_dir: str | Path, *, resume: bool = True) -> list[dict]:
     """Run every stage in order and publish completion after plotting."""
-    from .plotting import plot_results
+    from .plotting import PlotOptions, plot_results
 
     if not resume and (Path(output_dir) / "decoder_training.json").exists():
         raise FileExistsError(f"Run already exists: {output_dir}. Use resume or a fresh directory.")
@@ -588,7 +588,7 @@ def run(config: TrainingConfig, output_dir: str | Path, *, resume: bool = True) 
     fit(config, root)
     train(config, root)
     results = evaluate(config, root)
-    paths = plot_results(root)
+    paths = plot_results(root, PlotOptions(decoders=config.plot_decoders))
     atomic_json(root / "complete.json", {"schema_version": SCHEMA, "evaluation_rows": len(results),
                 "figures": [str(path.relative_to(root)) for path in paths]})
     return results

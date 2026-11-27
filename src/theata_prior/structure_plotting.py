@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator, NullLocator
 import numpy as np
 
 from .candidates import DetectorMetadata
@@ -23,14 +24,33 @@ def _ler_label(method: str) -> str:
     return f"{name}, calibration-observable labels" if method in UNKNOWN_METHODS else name
 
 
+def _label_ler_ticks(ax) -> None:
+    """Label percentages even when the panel spans less than one decade."""
+    lower, upper = ax.get_ylim()
+    upper = min(upper, 1.0)
+    ax.set_ylim(lower, upper)
+    for locator in (LogLocator(base=10, numticks=7), LogLocator(base=10, subs=(1, 2, 5), numticks=7),
+                    MaxNLocator(nbins=5)):
+        ticks = locator.tick_values(lower, upper)
+        ticks = ticks[(lower <= ticks) & (ticks <= upper)]
+        if 3 <= len(ticks) <= 7:
+            break
+    ax.set_yticks(ticks)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda rate, _: f"{100 * rate:.7g}%"))
+    ax.xaxis.set_minor_locator(NullLocator())
+    ax.yaxis.set_minor_locator(NullLocator())
+
+
 def _ler_plots(tables: dict, run: dict, output: Path) -> list[Path]:
     rows = [row for row in tables["decoding"] if row["status"] == "complete"]
     distances = run["base"]["distances"]
     rates = run["base"]["physical_error_rates"]
     sizes = run["base"]["training_shots"]
     regime = "Independent DEM sampling" if run["base"]["sample_source"] == "dem" else "Noisy circuit sampling (model mismatch)"
-    footnote = ("Lines show calibration-repeat means. Shading spans fixed-model 95% Wilson intervals. "
-                "Open triangles indicate zero-count upper bounds.")
+    footnote = ("Errors include logical mismatches and decoding failures.\n"
+                "Lines average evaluated repeats. Shading spans 95% Wilson intervals. "
+                "Open triangles mark zero-count upper bounds.\n"
+                "Vertical scales vary by panel. Gaps indicate unavailable prior fits or logical labels.")
     methods = [method for method in METHODS if any(row["method"] == method for row in rows)]
     result = []
     for by_p, name in ((True, "ler_vs_physical_error"), (False, "ler_vs_calibration_shots")):
@@ -56,9 +76,9 @@ def _ler_plots(tables: dict, run: dict, output: Path) -> list[Path]:
                         linestyle="--" if method == "actual_prior" else "-")
             xvalues, xlabel = (rates, "Mean physical MS error probability") if by_p else (sizes, "Calibration shots")
             title = f"d={d}, N={max(sizes):,}" if by_p else f"d={d}, p={panel_p:g}"
-            ax.set(xscale="log", yscale="log", xlabel=xlabel, ylabel="End-to-end error per memory shot", title=title)
+            ax.set(xscale="log", yscale="log", xlabel=xlabel, ylabel="Error rate per memory shot", title=title)
             ax.set_xticks(xvalues, labels=[f"{x:g}" for x in xvalues])
-            ax.minorticks_off()
+            _label_ler_ticks(ax)
         handles, labels = axes.flat[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="outside upper center", ncol=min(2, len(methods)), frameon=False)
         fig.supxlabel(f"{regime}. {footnote}", fontsize=9)
@@ -140,11 +160,13 @@ def _diagnostic_figures(root: Path, key: str, n: int, repetition: int, output: P
         delta = active.astype(int) - truth.astype(int)
         matrix = axes[3].imshow(family.matrix(delta), origin="lower", cmap="RdBu_r",
                                 vmin=-1, vmax=1, interpolation="nearest")
-        fig.colorbar(matrix, ax=axes[3], ticks=[-1, 0, 1], label="FN / agreement / FP")
+        errors = fig.colorbar(matrix, ax=axes[3])
+        errors.set_ticks([-1, 0, 1], labels=["Missed (FN)", "Agreement", "Extra (FP)"])
     else:
         for ax in axes[2:]:
             ax.text(0.5, 0.5, "Undefined fit", transform=ax.transAxes, ha="center")
-    for ax, title in zip(axes, ("Actual support", "Raw S11", "Holm decisions", "Final support errors"), strict=True):
+    for ax, title in zip(axes, ("Actual support", "Raw S11", "Holm selection\n(before rate refit)",
+                               "Final support errors"), strict=True):
         ax.set(title=title, xlabel="Local detector", ylabel="Local detector")
         ax.grid(False)
     fig.suptitle(f"{key}, N={n:,}, repeat {repetition}. Support diagonals indicate singletons.")

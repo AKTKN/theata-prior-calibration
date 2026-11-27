@@ -45,7 +45,8 @@ def _boundary_free_components(num_detectors: int, supports: list[tuple[int, ...]
     return columns, np.cumsum(lengths) - lengths
 
 
-def _initialize_decoders(directory: str, models: dict[str, str], baseline: str, allow_unmatched: bool) -> None:
+def _initialize_decoders(directory: str, models: dict[str, str], baseline: str, allow_unmatched: bool,
+                         allow_decomposed: bool) -> None:
     global _DECODE_STATE, _DECODE_THREAD_LIMIT
     _DECODE_THREAD_LIMIT = threadpool_limits(limits=1)
     samples = SampleSet.open(directory)
@@ -55,6 +56,10 @@ def _initialize_decoders(directory: str, models: dict[str, str], baseline: str, 
         dem = stim.DetectorErrorModel(text)
         if dem.num_detectors != samples.num_detectors or dem.num_observables != samples.num_observables:
             raise ValueError(f"Decoder {name!r} has dimensions inconsistent with the sample set")
+        if allow_decomposed:
+            # The paper's full-detector backend consumes Stim's decompositions.
+            decoders[name] = pymatching.Matching.from_detector_error_model(dem)
+            continue
         # The estimator's structure validator rejects non-graphlike mechanisms.
         # Recheck here so direct callers cannot silently drop a hyperedge.
         supports = []
@@ -162,13 +167,15 @@ def evaluate_models(
     shots: int | None = None,
     confidence: float = 0.95,
     allow_unmatched: bool = False,
+    allow_decomposed: bool = False,
 ) -> dict:
     """Evaluate all DEMs on identical test shots, with no training-data access.
 
     Each process constructs its own Matching objects and decodes C++ batches.
     Only integer counts cross process boundaries. ``models`` must contain
-    independent graphlike DEMs. With allow_unmatched, infeasible syndromes
-    count as failures and are also reported separately.
+    independent graphlike DEMs by default. The full-detector baseline accepts
+    Stim decompositions. With allow_unmatched, infeasible syndromes count as
+    failures and are also reported separately.
     """
     samples = SampleSet.open(samples) if not isinstance(samples, SampleSet) else samples
     count = samples.shots if shots is None else shots
@@ -180,12 +187,14 @@ def evaluate_models(
         raise ValueError("confidence must lie strictly between 0 and 1")
     if samples.num_observables < 1:
         raise ValueError("Logical-error evaluation requires at least one observable")
+    if allow_decomposed and allow_unmatched:
+        raise ValueError("The unmatched-shot audit requires explicit projected graphlike mechanisms")
     started = time.perf_counter()
     total_failures = {name: 0 for name in models}
     total_unmatched = {name: 0 for name in models}
     total_paired = {name: [0, 0] for name in models if name != baseline}
     tasks = [(start, min(count, start + chunk_shots)) for start in range(0, count, chunk_shots)]
-    initargs = (str(samples.directory), dict(models), baseline, allow_unmatched)
+    initargs = (str(samples.directory), dict(models), baseline, allow_unmatched, allow_decomposed)
 
     def accumulate(result: dict) -> None:
         for name, failures in result["failures"].items():

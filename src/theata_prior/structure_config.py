@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from .candidates import CANDIDATE_SCHEMA
-from .config import ExperimentConfig, THEATA_REVISION, _base_config, available_cpus
+from .config import ExperimentConfig, LEGACY_PHYSICAL_ERROR_RATES, THEATA_REVISION, _base_config, available_cpus
 from .logical_labels import LABEL_POLICY
 from .structure_estimation import MAX_COUNT_SHOTS
 
@@ -25,6 +25,8 @@ class StructureExperimentConfig:
     case_jobs: int = 1
 
     def __post_init__(self) -> None:
+        if self.base.physical_error_rates is None:
+            raise ValueError("Structure learning uses physical_error_rates")
         for name in ("alpha_pairs", "alpha_singletons"):
             value = getattr(self, name)
             if type(value) not in (int, float) or not 0 < value < 1:
@@ -67,5 +69,6 @@ def load_structure_config(path: str | Path, *, workers: int | None = None,
     unknown = set(options) - allowed
     if unknown:
         raise ValueError(f"Unknown structure options: {sorted(unknown)}")
+    data.setdefault("physical_error_rates", LEGACY_PHYSICAL_ERROR_RATES)
     base = _base_config(data, path, workers=workers, theata_path=theata_path)
     return StructureExperimentConfig(base, **options)

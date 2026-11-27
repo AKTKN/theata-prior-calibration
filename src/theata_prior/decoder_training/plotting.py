@@ -13,6 +13,7 @@ import numpy as np
 
 from ..io import atomic_json, read_json
 from .artifacts import file_digest, single_writer, write_csv
+from .config import validate_decoders
 
 METHODS = {
     "actual": ("Actual", "#333333"),
@@ -36,12 +37,15 @@ class PlotOptions:
     initialization: str | None = None
     color_normalization: str = "linear"
     formats: tuple[str, ...] = ("png", "pdf")
+    decoders: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.color_normalization not in ("linear", "log"):
             raise ValueError("color_normalization must be linear or log")
         if not self.formats or set(self.formats) - {"png", "pdf"}:
             raise ValueError("formats must contain png and/or pdf")
+        if self.decoders is not None:
+            object.__setattr__(self, "decoders", validate_decoders(self.decoders, "plot decoders"))
 
 
 def _legend(fig, methods, *, intervals: bool = False) -> None:
@@ -220,6 +224,8 @@ def _singletons(data, statuses, subtitle):
     methods = []
     missing = []
     for method, (_, color) in METHODS.items():
+        if method not in statuses:
+            continue
         key = f"singleton_prior_{method}"
         if key in data:
             methods.append(method)
@@ -227,7 +233,7 @@ def _singletons(data, statuses, subtitle):
             axes[0].plot(x, y, marker="o", markersize=3, linewidth=.8, color=color)
             if method != "actual":
                 axes[1].plot(x, y - actual, marker="o", markersize=3, linewidth=.8, color=color)
-        elif method in statuses:
+        else:
             missing.append(f"{METHODS[method][0]} · {statuses[method].replace('_', ' ')}")
     axes[0].set_ylabel("Singleton prior probability")
     axes[1].set_ylabel("Residual versus actual")
@@ -297,14 +303,36 @@ def _variation(rows):
     return output
 
 
-def load_results(output_dir: str | Path) -> tuple[list[dict], list[dict], list[dict]]:
-    """Read completed held-out results, numerical diagnostics and the artifact index."""
+def load_results(output_dir: str | Path, *,
+                 decoders: tuple[str, ...] | list[str] | None = None) -> tuple[list[dict], list[dict], list[dict]]:
+    """Read saved results, optionally selecting evaluation decoders and trained priors."""
     root = Path(output_dir)
     marker = read_json(root / "evaluation_complete.json")
     if any(file_digest(root / name) != digest for name, digest in marker["artifacts"].items()):
         raise ValueError("Held-out result tables differ from their completion marker")
-    return tuple(read_json(root / name) for name in (
+    rows, errors, index = (read_json(root / name) for name in (
         "evaluation.json", "prior_diagnostics.json", "evaluation_artifacts.json"))
+    if decoders is None:
+        return rows, errors, index
+    decoders = validate_decoders(decoders, "plot decoders")
+    available = {row["evaluation_decoder"] for row in rows}
+    missing = set(decoders) - available
+    if missing:
+        raise ValueError(f"No saved evaluations for {', '.join(sorted(missing))}. "
+                         f"Available evaluation decoders: {', '.join(sorted(available))}")
+
+    selected = {f"cem_{name}" for name in decoders}
+
+    def keep_method(method: str) -> bool:
+        return not method.startswith("cem_") or method in selected
+
+    rows = [row for row in rows if row["evaluation_decoder"] in decoders and keep_method(row["method"])]
+    errors = [row for row in errors if keep_method(row["method"])]
+    index = [{**row,
+              "statuses": {method: status for method, status in row["statuses"].items() if keep_method(method)},
+              "traces": {method: path for method, path in row["traces"].items() if keep_method(method)}}
+             for row in index]
+    return rows, errors, index
 
 
 @single_writer
@@ -312,7 +340,7 @@ def plot_results(output_dir: str | Path, options: PlotOptions | None = None) -> 
     """Plot saved results. Selectors choose the detailed design and the rate-sweep budget."""
     options = options or PlotOptions()
     root = Path(output_dir).resolve()
-    rows, errors, index = load_results(root)
+    rows, errors, index = load_results(root, decoders=options.decoders)
     selectors = {key: getattr(options, key) for key in ("distance", "physical_error_rate", "calibration_shots",
                                                         "replicate", "optimizer_seed", "initialization")
                  if getattr(options, key) is not None}
@@ -324,6 +352,8 @@ def plot_results(output_dir: str | Path, options: PlotOptions | None = None) -> 
     budget = detailed["calibration_shots"]
     detail_rows = [row for row in rows if all(row[key] == detailed[key] for key in keys)]
     region = root / "figures"
+    if options.decoders is not None and len(options.decoders) == 1:
+        region /= options.decoders[0]
     region.mkdir(parents=True, exist_ok=True)
     write_csv(region / "replicate_variation.csv", _variation(rows))
     atomic_json(region / "selection.json", {"options": asdict(options), "detailed_design": {key: detailed[key] for key in keys},

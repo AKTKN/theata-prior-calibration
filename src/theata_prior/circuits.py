@@ -30,6 +30,17 @@ import stim
 THEATA_COMMIT = "8bfb9b97de91bacac2f56725c27b4c71c6a91009"
 
 
+class LUTRangeError(ValueError):
+    """A compiled trace exceeded the configured strict MS lookup range."""
+
+    def __init__(self, metadata: dict[str, Any]) -> None:
+        self.metadata = metadata
+        limit = metadata["lut_range"][1]
+        first = next(gate for gate in metadata["ms_gate_trace"] if gate["n_bar"] > limit)
+        super().__init__(f"MS gate {first['index']} phonon n_bar={first['n_bar']:.8g} exceeds LUT maximum {limit} "
+                         f"({metadata['lut_out_of_range_gates']}/{metadata['ms_gates']} gates out of range)")
+
+
 @dataclass(frozen=True)
 class NativeStep:
     """One native Clifford/reset/measurement, with its compiled noise inputs."""
@@ -53,13 +64,7 @@ class CompiledSurface:
 
 @dataclass
 class PreparedSurface:
-    """A compiled trace reusable across the physical-error-rate sweep.
-
-    ``with_physical_error_rate(p)`` defines p as the arithmetic mean, over MS
-    gate locations, of the total nonidentity PAULI_CHANNEL_2 probability.  If
-    the unscaled hardware trace has mean m, discrete probabilities and the
-    dephasing rate are multiplied by alpha=p/m.  Times and phonons are fixed.
-    """
+    """A native circuit and trace for one set of hardware and compiler options."""
 
     ideal_circuit: stim.Circuit
     compiled_ideal_circuit: stim.Circuit
@@ -68,7 +73,13 @@ class PreparedSurface:
     noise_parameters: dict[str, float]
     metadata: dict[str, Any]
 
+    def with_native_noise(self) -> CompiledSurface:
+        noisy, summary = inject_native_noise(self.steps, self.noise_parameters, alpha=1.0)
+        del summary["scaled_noise_parameters"]
+        return self._with_dem(noisy, summary)
+
     def with_physical_error_rate(self, physical_error_rate: float) -> CompiledSurface:
+        """Apply legacy normalization for the structure and decoder-training experiments."""
         p = float(physical_error_rate)
         if not math.isfinite(p) or not 0 <= p < 0.5:
             raise ValueError("physical_error_rate must be finite and in [0, 0.5)")
@@ -77,7 +88,13 @@ class PreparedSurface:
             raise ValueError("Cannot normalize a zero-error MS lookup table")
         alpha = p / baseline
         noisy, noise_summary = inject_native_noise(self.steps, self.noise_parameters, alpha=alpha)
+        return self._with_dem(noisy, {
+            **noise_summary, "physical_error_rate": p,
+            "discrete_rate_scaling": "alpha = p / baseline_mean_ms_error; probabilities multiplied by alpha",
+            "idle_rate_scaling": "gamma_phi multiplied by alpha; p_Z = (1-exp(-2*alpha*gamma*t))/2",
+        })
 
+    def _with_dem(self, noisy: stim.Circuit, noise_summary: dict[str, Any]) -> CompiledSurface:
         # General PAULI_CHANNEL_2 outcomes are mutually exclusive.  Stim's
         # independent DEM conversion is explicitly an approximation here.
         raw_dem = noisy.detector_error_model(approximate_disjoint_errors=True)
@@ -87,7 +104,6 @@ class PreparedSurface:
         metadata = dict(self.metadata)
         metadata.update(
             **noise_summary,
-            physical_error_rate=p,
             dem_approximate_disjoint_errors=True,
             actual_dem_semantics="independent Pauli-event approximation to the physical circuit",
             circuit_sampling_semantics="exact sampling of the compiled stochastic Pauli circuit",
@@ -128,7 +144,7 @@ def inject_native_noise(
         if step.gate != "R":
             for qubit, gap in zip(step.targets, step.idle_before_us, strict=True):
                 idle_total_us += gap
-                probability = -math.expm1(-2 * gamma * gap * 1e-6) / 2
+                probability = _idle_probability(gamma, gap)
                 idle_max_p = max(idle_max_p, probability)
                 if probability > 0:
                     noisy.append("Z_ERROR", [qubit], probability)
@@ -158,6 +174,23 @@ def inject_native_noise(
         "idle_total_us": idle_total_us,
         "max_idle_probability": idle_max_p,
     }
+
+
+def _idle_probability(gamma: float, gap_us: float) -> float:
+    return -math.expm1(-2 * gamma * gap_us * 1e-6) / 2
+
+
+def native_noise_circuit_text(circuit: stim.Circuit) -> str:
+    """Serialize the flat native circuit without Stim's six-digit rounding of noise arguments."""
+    lines = []
+    for instruction in circuit:
+        if instruction.name in {"PAULI_CHANNEL_2", "Z_ERROR", "DEPOLARIZE1", "X_ERROR"}:
+            probabilities = ", ".join(map(repr, instruction.gate_args_copy()))
+            targets = " ".join(str(target.value) for target in instruction.targets_copy())
+            lines.append(f"{instruction.name}({probabilities}) {targets}")
+        else:
+            lines.append(str(instruction))
+    return "\n".join(lines)
 
 
 def _load_theata(path: str | Path) -> dict[str, Any]:
@@ -377,7 +410,7 @@ def prepare_surface(
         f"surface_code:rotated_memory_{basis.lower()}", distance=int(distance), rounds=int(rounds)
     )
     ions = sorted(ideal.get_final_qubit_coordinates())
-    capacity = max(20, (len(ions) + 1) // 2 + 4) if memory_capacity is None else memory_capacity
+    capacity = default_memory_capacity(len(ions)) if memory_capacity is None else memory_capacity
     if capacity < (len(ions) + 1) // 2:
         raise ValueError("memory_capacity cannot hold the split initial placement")
     # The upstream shuttle-distance model is 1000 - 5*n micrometers.  Rather
@@ -427,6 +460,7 @@ def prepare_surface(
     interval_by_id = {id(interval.op): interval for interval in intervals}
     if any(interval.t1 < interval.t0 for interval in intervals):
         raise ValueError("THeatA produced a negative operation duration")
+    cooling_intervals = [interval for interval in intervals if isinstance(interval.op, ast.CoolOp)]
     lookup = upstream["pauli_lookup"].PauliErrorLookup()
     gate_phonons = list(result.phonon_data["at_gates"])
     if len(gate_phonons) != sum(gate == "SQRT_XX" for gate, _ in specifications):
@@ -456,23 +490,27 @@ def prepare_surface(
             phonons = gate_record["phonons"]
             if set(phonons) != set(targets):
                 raise RuntimeError("MS target order does not match the phonon trace")
-            n_bar = phonon_scale * max(float(value[1]) for value in phonons.values())
-            if n_bar > lookup.n_bar_range[1]:
-                clip_count += 1
-                if strict_lut:
-                    raise ValueError(f"MS phonon n_bar={n_bar} exceeds LUT maximum {lookup.n_bar_range[1]}")
-            selected = lookup.select_n_bar(n_bar, mode=lookup_mode, warn_on_clip=False)
-            probabilities = tuple(lookup.lookup(n_bar, mode=lookup_mode, warn_on_clip=False))
-            total = math.fsum(probabilities)
-            if total <= 0 or total >= 1 or any(not math.isfinite(v) or v < 0 for v in probabilities):
-                raise ValueError("Invalid THeatA MS Pauli lookup probabilities")
-            raw_totals.append(total)
+            transversal = max(float(value[1]) for value in phonons.values())
+            n_bar = phonon_scale * transversal
+            out_of_range = n_bar > lookup.n_bar_range[1]
+            clip_count += out_of_range
+            selected = total = None
+            if not (out_of_range and strict_lut):
+                selected = lookup.select_n_bar(n_bar, mode=lookup_mode, warn_on_clip=False)
+                probabilities = tuple(lookup.lookup(n_bar, mode=lookup_mode, warn_on_clip=False))
+                total = math.fsum(probabilities)
+                if total <= 0 or total >= 1 or any(not math.isfinite(v) or v < 0 for v in probabilities):
+                    raise ValueError("Invalid THeatA MS Pauli lookup probabilities")
+                raw_totals.append(total)
             trace.append({"index": ms_index, "targets": list(targets), "n_bar": n_bar,
+                          "n_bar_transversal": transversal, "phonons": phonons,
                           "n_bar_lookup": selected, "baseline_total_error": total,
+                          "pauli_probabilities": probabilities if selected is not None else None,
+                          "planning_start_us": gate_record["time_us"],
                           "start_us": interval.t0, "end_us": interval.t1})
             ms_index += 1
         steps.append(NativeStep(gate, targets, tuple(gaps), probabilities))
-    if clip_count:
+    if clip_count and not strict_lut:
         warnings.warn(
             f"THeatA LUT clipped {clip_count}/{len(raw_totals)} MS phonon values to {lookup.n_bar_range[1]}; "
             "see metadata.ms_gate_trace or use strict_lut=True", RuntimeWarning, stacklevel=2
@@ -500,30 +538,39 @@ def prepare_surface(
         "stim_generator": f"surface_code:rotated_memory_{basis.lower()}",
         "used_qubits": len(ions), "stim_num_qubits": ideal.num_qubits,
         "num_detectors": ideal.num_detectors, "num_observables": ideal.num_observables,
-        "native_quantum_operations": len(operations), "ms_gates": len(raw_totals),
+        "native_quantum_operations": len(operations), "ms_gates": len(trace),
         "scheduler_implementation": "upstream ASAP rule with one-pass timestep grouping",
         "duration_us": duration_us, "compiler_stats": result.stats,
+        "cooling_operations": len(cooling_intervals),
+        "cooling_duration_us": math.fsum(interval.t1 - interval.t0 for interval in cooling_intervals),
+        "mean_ms_phonon": math.fsum(gate["n_bar_transversal"] for gate in trace) / len(trace),
+        "min_ms_phonon": min(gate["n_bar_transversal"] for gate in trace),
+        "max_ms_phonon": max(gate["n_bar_transversal"] for gate in trace),
         "planning_clock_us": result.phonon_data.get("planning_clock_us"),
         "phonon_clock": "THeatA serial planner clock (upstream convention)",
         "idle_clock": "THeatA parallel scheduler wall clock",
         "upstream_sequential_validation": True, "upstream_parallel_validation": True,
         "initial_placement": initial, "liz_capacity": liz_capacity,
         "memory_capacity": capacity, "native_schedule": "total-order DAG; original Stim measurement order",
-        "baseline_mean_ms_error": float(np.mean(raw_totals)),
-        "baseline_min_ms_error": min(raw_totals), "baseline_max_ms_error": max(raw_totals),
         "physical_error_rate_definition": "mean total nonidentity probability at physical MS gates",
-        "discrete_rate_scaling": "alpha = p / baseline_mean_ms_error; probabilities multiplied by alpha",
-        "idle_rate_scaling": "gamma_phi multiplied by alpha; p_Z = (1-exp(-2*alpha*gamma*t))/2",
         "noise_parameters": pars, "time_parameters": asdict(parameters),
         "compiler_options": asdict(configuration), "lookup_mode": lookup_mode,
         "phonon_scale": phonon_scale, "lut_range": list(lookup.n_bar_range),
-        "lut_clipped_gates": clip_count, "strict_lut": strict_lut,
+        "lut_clipped_gates": 0 if strict_lut else clip_count,
+        "lut_out_of_range_gates": clip_count, "strict_lut": strict_lut,
         "ms_gate_trace": trace, "theata_commit": commit,
         "tested_theata_commit": THEATA_COMMIT, "theata_source_sha256": hashes,
         "stim_version": stim.__version__,
     }
     # This also checks detector determinism of the native rewrite exactly.
     compiled_ideal.detector_error_model()
+    if clip_count and strict_lut:
+        idle_gaps = [gap for step in steps if step.gate != "R" for gap in step.idle_before_us]
+        metadata.update(idle_total_us=math.fsum(idle_gaps),
+                        max_idle_probability=_idle_probability(pars["gamma_phi_per_s"], max(idle_gaps, default=0.0)))
+        raise LUTRangeError(metadata)
+    metadata.update(baseline_mean_ms_error=float(np.mean(raw_totals)),
+                    baseline_min_ms_error=min(raw_totals), baseline_max_ms_error=max(raw_totals))
     return PreparedSurface(
         ideal_circuit=ideal,
         compiled_ideal_circuit=compiled_ideal,
@@ -534,13 +581,20 @@ def prepare_surface(
     )
 
 
+def default_memory_capacity(ion_count: int) -> int:
+    return max(20, (ion_count + 1) // 2 + 4)
+
+
 def compile_surface(
     distance: int,
     rounds: int,
     basis: str,
     theata_path: str | Path,
-    physical_error_rate: float,
+    physical_error_rate: float | None = None,
     **kwargs: Any,
 ) -> CompiledSurface:
-    """Convenience wrapper; use prepare_surface to reuse compilation in a sweep."""
-    return prepare_surface(distance, rounds, basis, theata_path, **kwargs).with_physical_error_rate(physical_error_rate)
+    """Compile one condition and use native noise unless a legacy rate is given."""
+    prepared = prepare_surface(distance, rounds, basis, theata_path, **kwargs)
+    if physical_error_rate is None:
+        return prepared.with_native_noise()
+    return prepared.with_physical_error_rate(physical_error_rate)

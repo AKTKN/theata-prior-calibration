@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import stim
 
-from theata_prior.config import ExperimentConfig
+from theata_prior.config import ExperimentConfig, load_config
 from theata_prior.dem import project_dem
 from theata_prior.estimation import SaturatedMarginalsError
 from theata_prior.experiment import (
@@ -179,3 +179,38 @@ def test_opt_in_records_undefined_fit_and_evaluates_available_models(tmp_path):
     assert skipped["saturated_detector_ids"] == [0]
     assert skipped["max_detector_mean"] == 1.0
     assert evaluate_models_stage(config, tmp_path, skip_saturated_marginals=True) == rows
+
+
+@pytest.mark.parametrize("thresholds", [[], [float("inf")], [-1], [True], ["1.5"], [1, 1.0], [None, None],
+                                        [2**53, 2**53 + 1], [10**400]])
+def test_cooling_threshold_validation(thresholds):
+    with pytest.raises(ValueError, match="cool_thresholds"):
+        ExperimentConfig(cool_thresholds=thresholds)
+
+
+def test_cooling_config_and_fingerprint_protect_legacy_results(tmp_path):
+    with pytest.raises(ValueError, match="hardware.compiler_options.cool_threshold_transversal"):
+        ExperimentConfig(cool_thresholds=(None,), hardware={"compiler_options": {"cool_threshold_transversal": None}})
+    with pytest.raises(ValueError, match="Specify only one"):
+        ExperimentConfig(cool_thresholds=(1.5,), physical_error_rates=(0.001,))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("physical_error_rates: [0.001]\n")
+    with pytest.raises(ValueError, match="Replace physical_error_rates"):
+        load_config(config_path)
+    config_path.write_text("cool_thresholds: [4, null, 0.25]\n")
+    config = load_config(config_path)
+    assert config.cool_thresholds == (4.0, None, 0.25)
+    assert "physical_error_rates" not in config.scientific_dict()
+    root = tmp_path / "existing"
+    prior = _config()
+    old_case = _write_toy_model(prior, root)
+    old_model = (old_case.directory / "model.json").read_bytes()
+    with pytest.raises(ValueError, match="different experiment"):
+        initialize_run(config, root)
+    assert (old_case.directory / "model.json").read_bytes() == old_model
+    fresh = tmp_path / "fresh"
+    initialize_run(config, fresh, rounds_by_distance={3: 2})
+    assert {case.directory.name for case in cases(config, fresh, rounds_by_distance={3: 2})} == {
+        "cool_4", "cool_off", "cool_0.25"}
+    with pytest.raises(ValueError, match="different experiment"):
+        initialize_run(replace(config, cool_thresholds=(0.25, None)), fresh, rounds_by_distance={3: 2})

@@ -9,16 +9,19 @@ from .config import load_config
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="THeatA surface-code prior calibration and MWPM benchmark")
+    parser = argparse.ArgumentParser(description="THeatA cooling-threshold sweep for surface-code prior calibration")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command, description in (("run", "Execute all stages with resume"), ("build", "Compile standard Stim circuits through THeatA"),
         ("sample", "Sample actual model for calibration and heldout evaluation"), ("fit", "Estimate priors with exact S11 and S14-S16"),
         ("evaluate", "Decode actual and estimated DEMs on paired test shots")):
         child = subparsers.add_parser(command, help=description)
-        child.add_argument("--config", default="configs/demo.yaml")
+        child.add_argument("--config", default="configs/lpt_calibration.yaml")
         child.add_argument("--out", required=True, help="Experiment output directory; different configurations require different directories")
         child.add_argument("--workers", type=int, help="Override allocated CPU worker count")
         child.add_argument("--theata-path", help="Override the pinned upstream checkout location")
+        if command in ("run", "fit", "evaluate"):
+            child.add_argument("--skip-saturated-marginals", action="store_true",
+                               help="Record undefined covariance fits and evaluate the remaining decoders")
     plot = subparsers.add_parser("plot", help="Recreate figures from saved metrics, without sampling or decoding")
     plot.add_argument("--out", required=True)
     structure = subparsers.add_parser("structure", help="Learn unknown graphlike detector supports")
@@ -61,6 +64,8 @@ def main(argv: list[str] | None = None) -> None:
             child.add_argument("--replicate", type=int)
             child.add_argument("--optimizer-seed", type=int)
             child.add_argument("--initialization", choices=("covariance", "uniform"))
+            child.add_argument("--decoders", nargs="+", choices=("mwpm", "uf"),
+                               help="Select evaluation decoders and their learned priors")
             child.add_argument("--color-normalization", choices=("linear", "log"), default="linear")
             child.add_argument("--formats", nargs="+", choices=("png", "pdf"), default=("png", "pdf"))
     thermal = subparsers.add_parser("thermal", help="Physical phonon-cap and cooling-policy benchmarks")
@@ -88,7 +93,8 @@ def main(argv: list[str] | None = None) -> None:
                 from .decoder_training.plotting import PlotOptions, plot_results
 
                 options = PlotOptions(args.distance, args.physical_error_rate, args.calibration_shots, args.replicate,
-                                      args.optimizer_seed, args.initialization, args.color_normalization, tuple(args.formats))
+                                      args.optimizer_seed, args.initialization, args.color_normalization, tuple(args.formats),
+                                      decoders=args.decoders)
                 for path in plot_results(args.out, options):
                     print(path)
                 return
@@ -149,7 +155,8 @@ def main(argv: list[str] | None = None) -> None:
         config = load_config(args.config, workers=args.workers, theata_path=args.theata_path)
         from .experiment import build_models, sample_models, fit_models, evaluate_models_stage, run_experiment
         actions = {"run": run_experiment, "build": build_models, "sample": sample_models, "fit": fit_models, "evaluate": evaluate_models_stage}
-        actions[args.command](config, args.out)
+        options = {"skip_saturated_marginals": True} if getattr(args, "skip_saturated_marginals", False) else {}
+        actions[args.command](config, args.out, **options)
     except (ValueError, FileNotFoundError, FileExistsError) as exc:
         parser.exit(2, f"error: {exc}\n")
 

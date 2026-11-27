@@ -1,9 +1,9 @@
 # Research starting point. Rare failures may require more validation and test shots.
 physical:
-  distances: [3, 5]
+  distances: [5, 7]
   basis: z
-  physical_error_rates: [0.0005, 0.001, 0.002]
-  training_shots: [1000, 10000, 50000]
+  physical_error_rates: [0.001, 0.002]
+  training_shots: [1000, 10000, 100000]
   test_shots: 100000
   repetitions: 1
   seed: 20261126
@@ -13,8 +13,8 @@ physical:
     compiler_options:
       cool_threshold_transversal: 1.5
     strict_lut: true
-rounds_by_distance: {3: 3, 5: 5}
-validation_shots: 20000
+rounds_by_distance: {5: 5, 7: 7}
+validation_shots: 50000
 optimizer_seeds: [0]
 initializations: [covariance]
 cem:
@@ -24,6 +24,6 @@ cem:
   train_batch_shots: 2048
   validation_interval: 5
 resources:
-  total_workers: 2
-  candidate_jobs: 2
-  sampling_jobs: 2
+  total_workers: 8
+  candidate_jobs: 4
+  sampling_jobs: 4

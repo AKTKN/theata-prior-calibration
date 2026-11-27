@@ -1,8 +1,8 @@
-# Reproducible moderate-size demonstration with both requested sweeps.
+# Moderate-size calibration demonstration with a cooling-threshold sweep.
 distances: [3, 5]
 basis: z
 rounds_per_distance: 1
-physical_error_rates: [0.0005, 0.001, 0.002, 0.004]
+cool_thresholds: [0.25, 1.5, 4.0, null]
 training_shots: [1000, 10000, 100000]
 test_shots: 50000
 repetitions: 1
@@ -15,7 +15,5 @@ theata_path: vendor/theata
 sample_source: dem
 probability_floor: 1.0e-8
 hardware:
-  compiler_options:
-    cool_threshold_transversal: 1.5
   strict_lut: true
 

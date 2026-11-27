@@ -2,7 +2,7 @@
 distances: [3, 5, 7]
 basis: z
 rounds_per_distance: 1
-physical_error_rates: [0.0005, 0.001, 0.002, 0.003, 0.004]
+cool_thresholds: [0.25, 0.5, 1.0, 1.5, 2.0, 4.0, null]
 training_shots: [1000, 10000, 100000, 1000000]
 test_shots: 1000000
 repetitions: 3
@@ -17,7 +17,5 @@ sample_source: dem
 probability_floor: 1.0e-8
 strict_estimation: false
 hardware:
-  compiler_options:
-    cool_threshold_transversal: 1.5
   strict_lut: true
 

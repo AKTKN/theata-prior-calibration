@@ -1,9 +1,31 @@
 # Validation and demonstration results
 
+## Cooling-threshold calibration
 
-The notebook's compilation cell invokes THeatA once per code distance
+The [walkthrough](notebooks/calibration_walkthrough.ipynb) compiles each
+distance, round count, basis, and cooling threshold independently. The
+end-to-end Z-memory smoke run used d=3, three rounds, calibration prefixes
+of 2,000 and 10,000 shots, and a shared 10,000-shot heldout set per condition.
+The evaluation below uses the 10,000-shot fitted priors.
+
+| Threshold | Mean MS error | Cool ops | Summed cooling (ms) | Wall time (ms) | Actual LER | Estimated LER | Prior RMSE |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 0.25 | 0.002433164 | 72 | 28.8 | 458.735 | 0.0276 | 0.0291 | 0.00141586 |
+| 1.5 | 0.002569084 | 69 | 27.6 | 457.635 | 0.0257 | 0.0255 | 0.00148225 |
+| 4 | 0.007417600 | 38 | 15.2 | 446.007 | 0.0400 | 0.0402 | 0.00220935 |
+| No cooling | 0.109683889 | 0 | 0 | 431.311 | 0.4481 | 0.4688 | 0.122333 |
+
+The smoke run enables the upstream LUT boundary behavior. The no-cooling trace
+has 50 of 72 MS gates above the LUT maximum of 20 transverse phonons. The
+2,000-shot fit in that condition is undefined because a detector mean reached
+1/2. With strict lookup enabled, the same condition retains the phonon trace
+and skips noise generation. At threshold 1.5 the reloaded noisy circuit and
+both full DEMs match the legacy implementation at `alpha=1.0` exactly.
+
+## Historical physical-error-rate sweep
+
+The former calibration walkthrough compiled THeatA once per code distance
 through `build_models()` and `prepare_surface()`.
-[Notebook](notebooks/calibration_walkthrough.ipynb) · [Compile call](src/theata_prior/circuits.py#L368)
 
 1. The bridge expands standard Stim gates such as `H` and `CX` into THeatA
    operations and constructs the dependency graph and initial ion placement.
@@ -15,7 +37,7 @@ through `build_models()` and `prepare_surface()`.
 3. The simulator applies idle times and the MS-gate phonon trace to
    construct `actual_noisy.stim`. The notebook displays its first 18
    instructions. `theata_native_ideal.stim` holds the noiseless expansion
-   from step 1. [Noise construction](src/theata_prior/circuits.py#L71) · [File output](src/theata_prior/experiment.py#L93)
+   from step 1.
 
 For `main1` at `d=9, p=0.004`, the directory
 `results/main1/d9_r9_z/p003_0.004/` contains both Stim files and the

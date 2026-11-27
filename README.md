@@ -2,10 +2,9 @@
 
 A modular experiment package for estimating **known graphlike DEM edge priors**
 from detector covariances, followed by a paired MWPM logical-error-rate comparison.
-The input circuit is Stim's standard `surface_code:rotated_memory_z` or
-`surface_code:rotated_memory_x`. Its native gates are compiled through
-[THeatA](https://github.com/MSTakahashiPJ/theata), preserving the original
-measurement order and detector/observable definitions.
+The default experiment uses the rotated surface-code workload and LIZ
+Predictive Trigger (LPT) of Figure 7 in THeatA. The standard Stim native
+bridge is available for the existing direct-cooling sweeps. [THeatA](https://github.com/MSTakahashiPJ/theata)
 
 The target of estimation is the identifiable matching graph obtained by
 projecting the full hardware DEM onto the memory basis's detector sector.
@@ -18,7 +17,7 @@ Use Python 3.10 or newer on Linux, macOS, or WSL. From this directory:
 
 ```bash
 bash scripts/bootstrap.sh
-bash scripts/run.sh --config configs/smoke.yaml --out results/smoke --workers 2
+bash scripts/run.sh --config configs/lpt_calibration_smoke.yaml --out results/lpt_calibration_smoke --skip-saturated-marginals
 ```
 
 The setup creates `.venv`, installs the package and notebook dependencies, and
@@ -36,13 +35,13 @@ With an existing Python environment:
 ```bash
 python -m pip install -e '.[notebook,test]'
 export THEATA_PATH=/absolute/path/to/theata
-theata-prior run --config configs/demo.yaml --out results/demo --workers 8
+theata-prior run --config configs/lpt_calibration.yaml --out results/lpt_calibration --skip-saturated-marginals
 ```
 
-`configs/smoke.yaml` is a small execution check; `demo.yaml` includes d=3 and 5;
-`production.yaml` includes d=3,5,7, up to one million calibration and evaluation
-shots, and three independent calibration repetitions. These are distinct runs,
-so use a distinct output directory for each configuration.
+`lpt_calibration.yaml` sweeps `liz_pt_thresholds` at distances 3, 5, and 7 with
+three rounds and 100,000 heldout shots per condition. The smoke preset uses d=3,
+threshold 0.2 and 4,000 heldout shots. Use a fresh output directory for each
+scientific configuration. A matching directory resumes the saved run.
 
 ## Notebook
 
@@ -51,23 +50,31 @@ bash scripts/bootstrap.sh
 .venv/bin/jupyter lab notebooks/calibration_walkthrough.ipynb
 ```
 
-Select the **THeatA prior calibration** kernel installed by the setup script.
-The single notebook executes circuit compilation, sampling, exact moment
-inversion, boundary estimation, paired decoding, and both requested figures.
-It also inspects the saved priors and p_ij matrix. With `configs/main1.yaml`,
-the notebook uses the worker count from the YAML and writes to `results/main1`.
-Set `CONFIG` to `configs/smoke.yaml` for a short execution check. The notebook
-calls the same package functions as the CLI, including multiprocessing.
-The notebook records undefined S11 fits in `fit_skips.json` when a calibration
-detector mean reaches or exceeds 1/2. It evaluates the actual-prior baseline and
-all available fits, and the figures leave undefined estimates blank.
+Select the **THeatA prior calibration** kernel. The notebook runs
+`configs/lpt_calibration.yaml` and writes to `results/lpt_calibration` by
+default. The first cell can override distances, fixed round count, LPT thresholds,
+maximum iterations, cooling duration, residual phonons, calibration and test shots,
+repetitions, workers, seed, and output directory. Set `RUN_EXPERIMENT = False`
+to review a saved run.
 
-For a host without Jupyter kernel sockets, the same pure-Python cells can be
-executed with rich outputs using:
+The walkthrough shows full-detector and Z-sector LER over the complete experiment,
+adjacent-distance suppression ratios, physical metrics, the calibration-shot
+sweep, RMSE, and raw S11 heatmaps. The paper comparison uses the full-detector
+LERs reported separately in `full_detector_metrics.csv`. `metrics.csv` stores
+the paired sector comparison and `suppression_ratios.json` stores the ratios.
+
+For scripted execution, run a copy of the notebook to keep its outputs
+separate from the tracked source.
 
 ```bash
-.venv/bin/python scripts/execute_notebook.py notebooks/calibration_walkthrough.ipynb --in-process
+mkdir -p results
+cp notebooks/calibration_walkthrough.ipynb results/lpt_walkthrough.ipynb
+THEATA_PRIOR_CONFIG=lpt_calibration_smoke.yaml .venv/bin/python scripts/execute_notebook.py results/lpt_walkthrough.ipynb
 ```
+
+The notebook records undefined S11 fits when any empirical detector mean
+reaches 1/2. The CLI enables the same behavior with `--skip-saturated-marginals`
+on `run`, or on both `fit` and `evaluate` for staged execution.
 
 ## Unknown detector supports
 
@@ -112,23 +119,23 @@ all four simulations and regenerates the figures. The [thermal methods](docs/the
 describe the physics, compiler, decoding, production presets, PBS commands and
 executed validation.
 
-## Experiment definition
+## Standard Stim direct-cooling experiment
 
-For each distance and physical rate, the package:
+For each distance, round count, basis, and cooling threshold, the package runs these stages.
 
 1. Generates the noiseless standard Stim rotated-memory circuit with
    `rounds = distance * rounds_per_distance`.
 2. Expands H and CX into verified native Clifford identities and compiles the
-   native sequence using the actual THeatA QCCD compiler. The conservative
+   native sequence independently with the specified THeatA cooling threshold. The conservative
    total ordering retains all original data and ancilla qubits; it does not
    substitute THeatA's ancilla-reuse example circuits.
 3. Inserts the THeatA MS Pauli lookup noise at each physical MS gate, one-qubit,
    reset and readout errors, and per-ion idle dephasing from the compiled
    schedule. THeatA's phonon tracking and scheduler timing are recorded.
-4. Defines the sweep parameter p as the **mean total nonidentity Pauli error
-   probability per MS location**. If the baseline LUT mean is m, all discrete
-   physical error probabilities and the dephasing rate are scaled by p/m.
-   Relative gate heterogeneity, transport, timing, and heating are retained.
+4. Uses the 15 lookup probabilities directly in each native MS channel and
+   applies the configured one-qubit, reset, readout, and dephasing parameters
+   as given. Records the **mean total nonidentity Pauli probability per MS
+   location** as the measured `mean_ms_error`.
 5. Extracts the full DEM, then validates and constructs its graphlike marginal
    in the selected memory basis. A probability-free topology and an illustrative
    uniform-prior `placeholder.dem` are saved. The placeholder values are not
@@ -155,11 +162,11 @@ The inferred LER is the probability of any logical-observable mismatch per
 ## Stage-by-stage CLI and Python API
 
 ```bash
-theata-prior build    --config configs/demo.yaml --out results/demo --workers 8
-theata-prior sample   --config configs/demo.yaml --out results/demo --workers 8
-theata-prior fit      --config configs/demo.yaml --out results/demo --workers 8
-theata-prior evaluate --config configs/demo.yaml --out results/demo --workers 8
-theata-prior plot --out results/demo
+theata-prior build    --config configs/demo.yaml --out results/demo_cooling --workers 8
+theata-prior sample   --config configs/demo.yaml --out results/demo_cooling --workers 8
+theata-prior fit      --config configs/demo.yaml --out results/demo_cooling --workers 8 --skip-saturated-marginals
+theata-prior evaluate --config configs/demo.yaml --out results/demo_cooling --workers 8 --skip-saturated-marginals
+theata-prior plot --out results/demo_cooling
 ```
 
 Each stage uses the preceding stage's saved files. `run` performs all stages.
@@ -178,7 +185,7 @@ from theata_prior.experiment import (
 from theata_prior.plotting import plot_results
 
 config = load_config("configs/demo.yaml", workers=8)
-rows = run_experiment(config, "results/demo")
+rows = run_experiment(config, "results/demo_cooling", skip_saturated_marginals=True)
 ```
 
 For an already prepared identifiable graph:
@@ -201,9 +208,11 @@ Every YAML key is validated; unknown keys raise. Main fields are:
 | Field | Meaning |
 |---|---|
 | `distances`, `basis`, `rounds_per_distance` | Standard Stim memory-code geometry |
-| `physical_error_rates` | Strictly increasing mean physical MS error probabilities |
+| `rounds`, `liz_pt_thresholds` | Fixed rounds and the LPT threshold sweep for reconstructed Z memory |
+| `liz_pt_max_iters`, `cooling_duration_us`, `residual_phonon` | LPT cycle budget and abstract cooling settings |
+| `cool_thresholds` | Distinct nonnegative transverse phonon thresholds. Use `null` to disable pre-MS threshold cooling |
 | `training_shots` | Strictly increasing detector-only calibration prefix sizes |
-| `test_shots` | Independent heldout shots per distance/rate, shared by compared decoders |
+| `test_shots` | Independent heldout shots per compiled condition, shared by compared decoders |
 | `repetitions` | Independent calibration streams; heldout data remain paired |
 | `workers` | CPU processes/threads, or `auto` respecting PBS/SLURM allocation |
 | `sample_chunk_shots` | Fixed sampling shard size; part of seed reproducibility |
@@ -211,8 +220,8 @@ Every YAML key is validated; unknown keys raise. Main fields are:
 | `covariance_chunk_shots`, `covariance_block_detectors` | Bounded-memory covariance chunks and parallel row blocks |
 | `probability_floor`, `probability_ceiling` | Fixed decoder-prior regularization, independent of actual priors |
 | `strict_estimation` | Reject nonphysical finite-sample estimates instead of clipping |
-| `sample_source` | `dem` (default) or `circuit` |
-| `hardware` | THeatA compiler/timing/noise overrides; see below |
+| `sample_source` | `circuit` for LPT. The standard Stim sweep supports `dem` and `circuit` |
+| `hardware` | Compiler, timing and noise overrides for the standard Stim sweep |
 
 Sampling and decoding use process pools with the `spawn` start method, worker
 local Stim/PyMatching objects, and disk-backed NumPy arrays. Covariance uses
@@ -222,14 +231,14 @@ The memory cost of covariance is O(B M + M²), with B the chunk size and M the
 selected detector count; no N-by-M float64 copy is retained. Small detector
 matrices need fewer covariance workers than large ones.
 
-Seeds are derived from a master seed, distance/rate, train/test namespace,
+Seeds are derived from a master seed, distance, rounds, basis, cooling threshold, train/test namespace,
 calibration repetition, and shard ID. Changing worker count does not change
 samples for fixed chunk size and Stim build. Stim does not guarantee bitwise
 identity across versions or CPU SIMD architectures. The maximum N is sampled
 once to ensure smaller N values are exact prefixes.
 
 The sample arrays use one byte per detector/observable. Approximate disk size
-per distance/rate is `(repetitions * max(training_shots) + test_shots) * (M+K)`
+per compiled condition is `(repetitions * max(training_shots) + test_shots) * (M+K)`
 bytes, with K logical observables. The complete p_ij matrix requires O(M²)
 storage. Files are memory-mapped; large studies do not load all samples in RAM.
 
@@ -237,7 +246,7 @@ For PBS/Torque, adapt the resource header in `scripts/run_pbs.sh`, then submit
 from the project root with `qsub scripts/run_pbs.sh`. The provided example uses
 `workq`, one node, and 96 CPUs.
 
-## Hardware options and recorded limits
+## Standard Stim hardware options and recorded limits
 
 The `hardware` mapping accepts `liz_capacity`, `memory_capacity`,
 `compiler_options`, `noise_parameters`, `time_parameters`, `lookup_mode`,
@@ -246,32 +255,54 @@ dataclasses and invalid options raise. The defaults use a single LIZ and a
 conservative native order. This is a valid hardware-aware execution of the
 standard circuit, not a claim of an optimized QCCD schedule.
 
-The supplied YAML files enable THeatA's gate-chain cooling policy at transverse
-phonon threshold 1.5 and set `strict_lut: true`. Both d=3 and d=5 were checked
-to remain within the LUT range. This is the configured upstream cooling policy,
-not an additional explicit coolant-ion simulation. At d=5 this policy cools
-every MS gate, so the MS LUT probabilities are uniform; scheduling-dependent
-idle noise and the resulting DEM priors remain nonuniform.
+Use `cool_thresholds` for the pre-MS policy. The loader rejects a simultaneous
+`hardware.compiler_options.cool_threshold_transversal` entry, including an entry
+set to `null`. Other hardware settings apply throughout the sweep. By default,
+the memory and temporary zone capacity is sized for the largest distance and
+reused across distances. The default `phonon_scale` is 1.0. The independent
+structure-learning and decoder-training benchmarks retain their existing
+`physical_error_rates` settings, and `plot` can still read legacy calibration
+results.
 
-The upstream MS noise LUT has a finite phonon range. API calls with an empty
-hardware mapping use the upstream no-cooling defaults, which can exceed this
-range. Such calls default to the upstream bounded lookup behavior, emit a
-warning, and record every affected gate and the saturation count in
-`hardware.json`. Set `strict_lut=True` to reject this. No out-of-range physical
-error probability is silently accepted.
+Before each MS gate, the THeatA policy compares the largest transverse
+occupation of its target ions with the threshold. If it exceeds the threshold,
+THeatA directly cools the entire LIZ chain, which can contain ions carrying
+quantum information. This describes the upstream model's assumption. The model
+takes a fixed cooling time and fixed residual phonon numbers as separate
+inputs, without a dynamic relation. The threshold is the only cooling input
+that varies across this sweep. `null` disables this policy. Other cooling
+policies remain off by default.
+
+The standard Stim `demo` and `production` YAMLs use `strict_lut: true`.
+A condition above the LUT maximum keeps its compiled hardware trace and reason
+in `hardware.json` and `model_failed.json`. The run continues with the usable
+conditions. The no-cooling conditions exceed the LUT maximum under the default
+hardware. `smoke.yaml` explicitly uses `strict_lut: false` to exercise the
+upstream bounded lookup as well. For this mode, the raw phonons, selected LUT
+rows, and counts of out-of-range gates are recorded.
 
 ## Output layout
 
+LPT runs use case directories such as `d3_r3_z/lpt_0.2`. They store the
+reconstructed ideal circuit, full heldout samples, and `evaluation_full.json`
+in addition to the sector files. A `projection_error` in `model.json` records
+unsupported sector topology while the full-detector evaluation proceeds.
+The following example shows the standard Stim layout.
+
 ```text
-results/demo/
-  run.json                         # Config, versions, definitions, run identity
-  metrics.csv / metrics.json       # Per-model LER and 95% Wilson intervals
-  paired_comparisons.csv           # Discordant logical failures and rate difference
+results/demo_cooling/
+  run.json                             # Config, versions, run identity
+  physical_metrics.csv / physical_metrics.json
+  metrics.csv / metrics.json           # Per-model LER, Wilson intervals, prior RMSE
+  paired_comparisons.csv               # Discordant logical failures and rate difference
   figures/
-    ler_vs_physical_error.png/.pdf
-    ler_vs_calibration_shots.png/.pdf
-    priors_d3.png/.pdf              # p_ij + actual/fitted prior comparison
-  d3_r3_z/p000_0.0005/
+    ler_vs_cooling_threshold.png/.pdf
+    prior_rmse_vs_cooling_threshold.png/.pdf
+    ler_vs_calibration_shots_d3.png/.pdf
+    ler_vs_mean_ms_error_d3.png/.pdf
+    ler_vs_execution_time_d3.png/.pdf
+    priors_d3.png/.pdf                  # p_ij and actual/fitted prior comparison
+  d3_r3_z/cool_0.25/
     stim_standard_ideal.stim
     theata_native_ideal.stim
     actual_noisy.stim
@@ -297,8 +328,15 @@ error. Detector marginals at or above 1/2 raise rather than being hidden by
 clipping. Exact population-moment tests establish recovery under the model;
 finite-sample clipping introduces bias that the saved diagnostics expose.
 
-Figures show the actual matching prior baseline and estimated priors against
-physical p and calibration N. Wilson intervals condition on each fitted
+The physics table records the number and summed duration of cooling operations,
+scheduled wall time, transverse phonon and MS error ranges, idle statistics,
+and lookup status. For the phonon statistics, each gate contributes the maximum
+transverse occupation of its two target ions at the gate. The `cool_off` case
+uses JSON `null` and a separate plot category. Legacy result directories keep
+their original paths and run fingerprints.
+
+Figures show actual-prior and estimated-prior logical error rates against
+cooling threshold, measured mean MS error, wall time, and calibration size. Wilson intervals condition on each fitted
 model. When calibration is repeated, curves show repeat means and the envelope
 of the individual intervals; repeated evaluations on the same test samples
 are never pooled into fictitious independent trials. Zero-error results remain
